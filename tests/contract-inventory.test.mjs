@@ -12,9 +12,9 @@ test('CN runtime and Windows installer have separate exhaustive inventories', ()
   assert.equal(runtimeCommands.length, 50);
   assert.equal(contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('windows-installer')).length, 9);
   assert.equal(contract.commands.filter(item => item.kind === 'plugin').length, 119);
-  assert.equal(contract.events.length, 59);
+  assert.equal(contract.events.length, 60);
   assert.equal(contract.sourceApplication.region, 'CN');
-  assert.equal(contract.sourceApplication.entryModule, 'index-D8GJxFG7.js');
+  assert.equal(contract.sourceApplication.entryModule, 'index-DsnG26DH.js');
   const lock = JSON.parse(fs.readFileSync(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
   assert.equal(contract.sourceApplication.version, lock.version);
   assert.ok(!Object.hasOwn(contract.runtimeConstants, 'authCallbackScheme'));
@@ -36,7 +36,7 @@ test('all command and event evidence preserves JavaScript and UTF-8 byte ranges'
     assert.ok(site.file.endsWith('.js'));
     assert.ok(site.context.includes(site.source));
   }
-  assert.ok(contract.commands.find(item => item.name === 'get_boot_diagnostics').callSites.some(site => site.callee === 'kt'));
+  assert.ok(contract.commands.find(item => item.name === 'get_boot_diagnostics').callSites.some(site => site.callee === 'Ct'));
   assert.ok(contract.commands.find(item => item.name === 'open_panel_window').callSites.some(site => site.callee === '_'));
 });
 
@@ -60,6 +60,8 @@ test('keyboard and mouse payloads cannot accidentally share a count stream', () 
   assert.equal(find('mouse-button').payload.properties.memberId.type, 'number');
   assert.match(find('mouse-button').notes, /Do not also emit key-press/);
   assert.ok(find('mouse-button').callSites[0].payloadReads.includes('memberId'));
+  assert.equal(find('gamepad-button-press').payload.type, 'undefined');
+  assert.match(find('gamepad-button-press').notes, /never release/);
 });
 
 test('storage retains account/environment identity and intentional zero counts', () => {

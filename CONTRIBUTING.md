@@ -10,11 +10,24 @@
 - 文档、故障排查与翻译。
 - 新官方版本的适配：更新契约、实现新增命令、修复前端补丁锚点。
 
+## 版本号
+
+移植版采用 `<官方版本>-<移植修订号>`，例如 `1.0.2-1`：
+
+- 首次适配某个官方版本：修订号从 `1` 开始，例如 `1.0.2-1`。
+- 只修复 Linux 移植代码或打包问题：修订号递增，例如 `1.0.2-2`。
+- 官方版本升级：修订号重置，例如官方 `1.0.3` 对应 `1.0.3-1`。
+- **不要发布裸官方版本号**（如 `1.0.2`），也不要用 `1.0.2.1`、`1.0.2+1` 或 `1.0.2-hotfix1`；这些格式会破坏 Tauri/SemVer 或版本排序。
+- Git Tag 加 `v` 前缀（`v1.0.2-1`），应用内版本与产物名使用不带 `v` 的 `1.0.2-1`。
+- 稳定版 Release 不要标记为 GitHub Pre-release，否则 `releases/latest` 可能不会指向它。
+
+`upstream-cn.json` 中的 `version` 始终是官方版本（如 `1.0.2`），不要写入移植修订号。
+
 ## 开发环境
 
 ```bash
 npm ci
-npm run upstream:update      # 下载官方 1.0.1 并提取 frontend/
+npm run upstream:update      # 下载官方 1.0.2 并提取 frontend/
 npm run icons
 npm run prepare:frontend
 npm run test:rust

@@ -1,7 +1,7 @@
 # Wuwa Tappo CN · Linux 社区移植版
 
 [![License: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
-[![Official UI](https://img.shields.io/badge/official%20UI-1.0.1-c8a2ff.svg)](upstream-cn.json)
+[![Official UI](https://img.shields.io/badge/official%20UI-1.0.2-c8a2ff.svg)](upstream-cn.json)
 
 把《鸣潮》官方桌宠 **Wuwa Tappo 国服** 的完整官方桌面端移植到 Linux。界面、角色、字体与在线协议保持官方原样，原生后端使用 **Rust + Tauri 2 + WebKitGTK** 重建，不需要 Wine 或虚拟机。
 
@@ -11,7 +11,7 @@
 
 - **官方桌宠主界面**：透明、无边框、全屏覆盖层，保留官方角色、宝箱、点击计数、设置入口与多语言文案。
 - **官方多窗口**：背包、图鉴、合成、联机、设置，登录窗口，关于、OSS 声明、更新/维护提示，以及 Toast。
-- **全局键盘与鼠标**：基于 `evdev` 读取 `/dev/input/event*`，统计打字与点击；支持官方快捷键、点击穿透和按角色区域命中（联机时区分不同桌宠）。
+- **全局键盘、鼠标与手柄**：基于 `evdev` 读取 `/dev/input/event*`，统计打字、点击与手柄按键；支持官方快捷键、点击穿透和按角色区域命中（联机时区分不同桌宠）。
 - **原生 WebSocket 代理**：联机房间走 Rust `tokio-tungstenite`，绕开 WebKitGTK 对跨域 WebSocket 的限制，同时只允许官方国服端点。
 - **多显示器与窗口几何**：工作区安全区域、任务栏 insets、显示器切换、窗口折叠、鼠标穿透命中测试。
 - **本地数据**：点击计数原子写入；日志做脱敏和滚动；不内置任何账号、Cookie 或遥测上传。
@@ -22,7 +22,7 @@
 - **x86_64 Linux**，X11 或 XWayland。
 - **WebKitGTK 4.1**、GTK 3、`libsoup-3.0`。
 - 预编译发布包在 Ubuntu 24.04 环境构建，要求 **glibc ≥ 2.39**（Ubuntu 24.04+、Fedora 40+、Arch 等）。更旧的发行版请从源码构建。
-- 读取全局键盘/鼠标需要当前用户属于 **`input` 组**。
+- 读取全局键盘、鼠标和手柄需要当前用户属于 **`input` 组**。
 
 各发行版安装运行依赖：
 
@@ -44,9 +44,9 @@ sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3
 从 [Releases](https://github.com/observer130/wuwa-tappo-linux/releases) 下载 `wuwa-tappo-linux-<version>-x86_64.tar.gz`，校验后解压：
 
 ```bash
-sha256sum -c wuwa-tappo-linux-0.1.0-x86_64.tar.gz.sha256  # 可选
-tar -xzf wuwa-tappo-linux-0.1.0-x86_64.tar.gz
-cd wuwa-tappo-linux-0.1.0-x86_64
+sha256sum -c wuwa-tappo-linux-1.0.2-1-x86_64.tar.gz.sha256  # 可选
+tar -xzf wuwa-tappo-linux-1.0.2-1-x86_64.tar.gz
+cd wuwa-tappo-linux-1.0.2-1-x86_64
 ./install.sh   # 加入 input 组、注册桌面菜单项
 ./run.sh       # 启动
 ```
@@ -61,7 +61,7 @@ cd wuwa-tappo-linux-0.1.0-x86_64
 
 ```bash
 npm ci
-npm run upstream:update          # 下载并校验官方 1.0.1 安装包，提取 frontend/
+npm run upstream:update          # 下载并校验官方 1.0.2 安装包，提取 frontend/
 npm run icons
 npm run prepare:frontend
 cargo build --release --manifest-path src-tauri/Cargo.toml

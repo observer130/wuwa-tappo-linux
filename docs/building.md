@@ -45,7 +45,7 @@ node scripts/sync-upstream.mjs
 
 ```bash
 node scripts/extract-assets.mjs \
-  --installer /path/to/WuwaTappo-cn_1.0.1_x64-setup.exe \
+  --installer /path/to/WuwaTappo-cn_1.0.2_x64-setup.exe \
   --sevenzip "$(command -v 7z)" \
   --output frontend
 ```

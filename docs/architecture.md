@@ -74,12 +74,13 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 ## 全局输入
 
 - 每 2 秒扫描 `/dev/input/event*`，以非阻塞方式打开。
-- 只处理 `EV_KEY`：
+- 处理 `EV_KEY` 与手柄方向键的 `EV_ABS`：
   - 鼠标键码 272–274 → `mouse-button`（含 `button`、`action`、可选 `memberId`）。
+  - 手柄键码 `0x120–0x12b`、`0x130–0x13f`、`0x220–0x223`、`0x2c0–0x2e7` → `gamepad-button-press`；方向键 `ABS_HAT0X/Y` 从归零状态进入按下时也只发送一次。
   - 其他键码 < 256 → `key-press` / `key-release`，使用浏览器 `KeyboardEvent.key` 风格名称（如 `a`、`F7`、`ControlLeft`、空格为 `" "`）。
 - 指针位置通过独立的 XCB 连接查询 X11 根窗口，避免 Tao/GDK 在后台线程返回启动时的缓存坐标。输入区域生效后，指针位于桌宠上时 XWayland 会持续更新该坐标。
 - 鼠标移动以 33 ms 节流轮询，光标在辅助窗口上时不发送。
-- 按键去重与鼠标按下状态由后端维护，避免重复计数。
+- 按键去重、鼠标按下状态与手柄按住状态由后端维护，避免重复计数。
 - 需要 `input` 组读权限；失败时前端显示可恢复提示，并提供 `resume_input_monitor`。
 
 ## 原生 WebSocket 代理

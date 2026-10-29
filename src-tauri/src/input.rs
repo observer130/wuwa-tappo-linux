@@ -233,10 +233,28 @@ struct PollFd {
 
 const EV_KEY: u16 = 1;
 const EV_SYN: u16 = 0;
+const EV_ABS: u16 = 3;
+const ABS_HAT0X: u16 = 0x10;
+const ABS_HAT0Y: u16 = 0x11;
 
 struct Device {
     _path: PathBuf,
     file: File,
+    hat: [i32; 2],
+}
+
+/// Linux exposes controller buttons as EV_KEY codes above the keyboard range.
+/// Include joystick, gamepad, and "trigger happy" mappings used by older pads.
+fn is_gamepad_button(code: u16) -> bool {
+    matches!(code, 0x120..=0x12b | 0x130..=0x13f | 0x220..=0x223 | 0x2c0..=0x2e7)
+}
+
+fn hat_axis(code: u16) -> Option<usize> {
+    match code {
+        ABS_HAT0X => Some(0),
+        ABS_HAT0Y => Some(1),
+        _ => None,
+    }
 }
 
 fn open_device(path: &PathBuf) -> Option<File> {
@@ -268,7 +286,11 @@ fn scan_devices(devices: &mut Vec<Device>, known: &mut BTreeSet<PathBuf>) {
         }
         if let Some(file) = open_device(&path) {
             known.insert(path.clone());
-            devices.push(Device { _path: path, file });
+            devices.push(Device {
+                _path: path,
+                file,
+                hat: [0, 0],
+            });
         }
     }
 }
@@ -462,6 +484,7 @@ fn run_monitor(
 
     let mut pressed_keys = BTreeSet::new();
     let mut pressed_buttons: BTreeMap<&'static str, bool> = BTreeMap::new();
+    let mut pressed_gamepad_buttons = BTreeSet::new();
     let mut last_scan = Instant::now();
     let mut last_position: Option<(f64, f64)> = None;
     let mut last_move_emit = Instant::now() - Duration::from_millis(100);
@@ -516,6 +539,19 @@ fn run_monitor(
                     if event.type_ == EV_SYN {
                         continue;
                     }
+                    if event.type_ == EV_ABS {
+                        let Some(axis) = hat_axis(event.code) else {
+                            continue;
+                        };
+                        let device = &mut devices[index];
+                        let was_active = device.hat != [0, 0];
+                        device.hat[axis] = event.value;
+                        let active = device.hat != [0, 0];
+                        if !was_active && active {
+                            let _ = app.emit("gamepad-button-press", ());
+                        }
+                        continue;
+                    }
                     if event.type_ != EV_KEY {
                         continue;
                     }
@@ -557,6 +593,14 @@ fn run_monitor(
                             member_id: position.member_id,
                         };
                         let _ = app.emit("mouse-button", payload);
+                    } else if is_gamepad_button(event.code) {
+                        if event.value == 1 {
+                            if pressed_gamepad_buttons.insert(event.code) {
+                                let _ = app.emit("gamepad-button-press", ());
+                            }
+                        } else if event.value == 0 {
+                            pressed_gamepad_buttons.remove(&event.code);
+                        }
                     } else if event.code < 256 {
                         let down = event.value == 1;
                         if down {
@@ -580,6 +624,7 @@ fn run_monitor(
                     // Releases from the removed device will never arrive.
                     pressed_keys.clear();
                     pressed_buttons.clear();
+                    pressed_gamepad_buttons.clear();
                 }
             }
         }
@@ -602,5 +647,27 @@ fn run_monitor(
                 last_move_emit = Instant::now();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gamepad_buttons_stay_out_of_keyboard_and_mouse_ranges() {
+        for code in [0x120, 0x12b, 0x130, 0x13f, 0x220, 0x223, 0x2c0, 0x2e7] {
+            assert!(is_gamepad_button(code), "expected gamepad button {code}");
+        }
+        for code in [1, 65, 272, 274, 0x100, 0x110, 0x119, 0x224, 0x2e8] {
+            assert!(!is_gamepad_button(code), "unexpected gamepad button {code}");
+        }
+    }
+
+    #[test]
+    fn hat_axes_cover_both_dpad_directions() {
+        assert_eq!(hat_axis(ABS_HAT0X), Some(0));
+        assert_eq!(hat_axis(ABS_HAT0Y), Some(1));
+        assert_eq!(hat_axis(0x00), None);
     }
 }

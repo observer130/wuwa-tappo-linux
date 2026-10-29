@@ -49,7 +49,18 @@ newgrp input
 ./run.sh
 ```
 
-若使用 Flatpak/Snap 或容器运行，`input` 组与 `/dev/input` 可能不可见，请改用发行版原生包。
+手柄按键也依赖同一权限。若使用 Flatpak/Snap 或容器运行，`input` 组与 `/dev/input` 可能不可见，请改用发行版原生包。
+
+## 手柄按键不计入点击
+
+1.0.2 起官方前端会把 `gamepad-button-press` 计入点击。Linux 后端直接从 `/dev/input/event*` 读取手柄按键与方向键，同样需要 `input` 组权限；确认：
+
+```bash
+ls -l /dev/input/by-id/ | grep -i -E 'joystick|gamepad'
+id -nG "$USER"            # 应包含 input
+```
+
+若手柄被 Steam Input 映射成键盘/鼠标，系统可能不再暴露原始手柄事件；关闭 Steam Input 或改用原生模式后再试。蓝牙手柄重新连接后，后端最多 2 秒内会自动重新扫描设备。
 
 ## 提示“无法读取键鼠监听状态”/“监听尚未启动”
 
