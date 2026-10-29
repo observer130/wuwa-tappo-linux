@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
   patchAbout,
+  patchChestTimers,
   patchCookieStorage,
   patchDomesticSdkUrls,
   patchIndexLanguage,
@@ -39,6 +40,7 @@ function patchOne(description, matches, patch) {
 
 patchOne('modal event bridge', name => /\/modalBridge-[^/]+\.js$/.test(name), patchLoginReady);
 patchOne('About view', (_, content) => content.includes('about_content') && content.includes('系统配置'), patchAbout);
+patchOne('chest timer view', (_, content) => content.includes('function Vn(){if(!A.isLoggedIn){Bt.value=0'), patchChestTimers);
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });

@@ -3,6 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {
   patchAbout,
+  patchChestTimers,
   patchCookieStorage,
   patchDomesticSdkUrls,
   patchIndexLanguage,
@@ -51,6 +52,15 @@ test('login tokens survive when WebKitGTK rejects tauri:// cookies', () => {
   assert.equal(context.readCookie('infoToken'), null);
   assert.equal(store.has('wuwatappo-cookie-infoToken'), false);
   assert.throws(() => patchCookieStorage('getCookie=e=>{}'), /cookie helpers changed/);
+});
+
+test('chest timers are not blocked by activity config readiness', () => {
+  const source = 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;const e=os()}function Xr(e){return Pa.value?e||yr.value?!0:T.value:!1}';
+  const patched = patchChestTimers(source);
+  assert.ok(patched.includes('Qn.value=!0;'));
+  assert.ok(!patched.includes('if(!Qn.value)return;'));
+  assert.ok(patched.includes('A.isLoggedIn&&yr.value?!0:Pa.value?e?!0:T.value:!1'));
+  assert.throws(() => patchChestTimers('function Vn(){if(!Qn.value)return;}'), /Chest timer or visibility/);
 });
 
 test('login readiness is reported after the Vue listener is installed', () => {

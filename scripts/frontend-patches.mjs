@@ -34,6 +34,22 @@ export function patchCookieStorage(source) {
   return source.replace(COOKIE_HELPERS, replacement);
 }
 
+// The 1.0.2 main view only computes chest timers after the activity config's
+// server time has been applied. On Linux the auth watcher can observe an
+// already-hydrated session, leaving that flag false and both chest buttons
+// permanently disabled. The timers themselves already fall back to Date.now(),
+// so mark readiness when the view first computes them.
+export function patchChestTimers(source) {
+  const timer = 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;';
+  const visibility = 'function Xr(e){return Pa.value?e||yr.value?!0:T.value:!1}';
+  if (source.split(timer).length !== 2 || source.split(visibility).length !== 2) {
+    throw new Error('Chest timer or visibility code changed; reconcile the frontend before building.');
+  }
+  return source
+    .replace(timer, 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}Qn.value=!0;')
+    .replace(visibility, 'function Xr(e){return A.isLoggedIn&&yr.value?!0:Pa.value?e?!0:T.value:!1}');
+}
+
 export function patchLoginReady(source) {
   const original = 'function N(n){return o(u,t=>{n(t.payload??{})})}';
   const replacement = 'async function N(n){const unlisten=await o(u,t=>{n(t.payload??{})});await window.__TAURI_INTERNALS__.invoke("login_window_ready");return unlisten}';

@@ -106,11 +106,17 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
   └─ scripts/extract-assets.mjs   解析 PE + Brotli 资源表，静态提取，不执行安装包
        └─ frontend/               原始官方前端（不入库）
             └─ scripts/prepare-frontend.mjs
-                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 关于页 / 语言 / 登录态存储
+                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 宝箱计时 / 关于页 / 语言 / 登录态存储
                  └─ build/frontend/        嵌入二进制的最终前端（不入库）
 ```
 
 所有补丁都使用精确锚点并验证命中数量。官方升级导致锚点变化时，`prepare-frontend` 直接失败，CI 与发布流程随之中止。
+
+### 宝箱计时
+
+官方 1.0.2 在计算宝箱倒计时前会等待活动配置的 `server_time` 就绪。若登录态在 Vue 挂载前已经恢复，这个就绪标记可能一直为 `false`，两个宝箱按钮会停留在 `reward-btn--loading` 的灰色禁用态。
+
+`patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`，与 1.0.1 的行为一致。补丁还让“总是展示宝箱”在点击余额不足 1000 时也强制显示倒计时区域，而不是把整个宝箱区域隐藏。宝箱已可领取时显示彩色按钮，领取后显示倒计时。
 
 ### 登录态存储
 

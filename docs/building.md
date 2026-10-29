@@ -90,6 +90,7 @@ npm run test:rust
 | --- | --- |
 | `patchDomesticSdkUrls` | 把官方协议相对 SDK 地址改为 HTTPS，适配 `tauri://localhost` |
 | `patchLoginReady` | 登录窗口监听器挂载后回报 `login_window_ready`，消除首帧竞态 |
+| `patchChestTimers` | 避免已恢复登录态时宝箱按钮永久停留在加载/灰色状态 |
 | `patchAbout` | 关于页标注“Linux 社区移植版”，并把原 Windows 配置改为二级标题 |
 | `patchIndexLanguage` | `<html lang>` 设为 `zh-CN` |
 
