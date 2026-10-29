@@ -870,13 +870,15 @@ pub fn dispatch(
             main_window(app)?.set_skip_taskbar(skip).map_err(err)?;
         }
         "show_toast_overlay" => {
-            let w = if let Some(w) = app.get_webview_window("toast") {
-                w
-            } else {
-                build_window(app, "toast", "/toast", (620., 160.), false)?
-            };
-            w.set_ignore_cursor_events(true).map_err(err)?;
+            // The toast is created once during startup so this command never
+            // builds a GTK window from inside the event loop. Show it before
+            // making it click-through: tao unwraps the GDK window and a hidden
+            // window has not been realized yet.
+            let w = app
+                .get_webview_window("toast")
+                .ok_or("Toast window is unavailable")?;
             w.show().map_err(err)?;
+            w.set_ignore_cursor_events(true).map_err(err)?;
             center_on_main(app, &w, Some((620., 160.)))?;
         }
         "sync_native_menu" => return crate::menu::sync(app, args),
@@ -912,6 +914,7 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     if let Err(error) = apply_main_input_shape(app) {
         eprintln!("Initial input shape failed: {error}");
     }
+    build_window(app, "toast", "/toast", (620., 160.), false)?;
     if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--inspect") {
         w.open_devtools();
     }
