@@ -31,7 +31,7 @@ mkdir -p "$OUT/bin" "$OUT/assets"
 
 cp "$BIN" "$OUT/bin/wuwatappo-linux"
 chmod 755 "$OUT/bin/wuwatappo-linux"
-cp run.sh install.sh LICENSE THIRD_PARTY_NOTICES.md README.md upstream-cn.json "$OUT/"
+cp run.sh install.sh LICENSE README.md upstream-cn.json "$OUT/"
 cp -r docs "$OUT/"
 chmod 755 "$OUT/run.sh" "$OUT/install.sh"
 
