@@ -292,7 +292,9 @@ fn build_window(
         }
     })
     .inner_size(size.0 * css_scale, size.1 * css_scale)
-    .transparent(label == "main" || label == "toast")
+    // Every official route is a rounded card. An opaque native window leaves
+    // its white background visible around those corners (panel/login/about).
+    .transparent(true)
     .decorations(false)
     .shadow(false)
     .resizable(label == "panel")

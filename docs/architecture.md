@@ -58,6 +58,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
   - `window_passthrough`：整窗穿透开关。
 - 原生后端把 `regions` / `input_regions` 的并集通过 XShape 设为 `ShapeInput`；`set_main_swallow_mouse(true)` 时临时扩成全窗口，`set_main_force_cursor_ignore(true)` 时清空。
 - 辅助窗口的 `HitRegion` 以全局 CSS 坐标保存，原生鼠标事件落在面板/关于窗口上时不再转发给主窗口。
+- 主窗口、面板、登录、关于、OSS 声明等窗口统一使用透明原生表面；官方路由本身是圆角卡片，否则窗口默认白底会在圆角外露出矩形白边。
 
 ## 缩放与坐标
 
