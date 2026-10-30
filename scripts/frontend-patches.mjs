@@ -42,12 +42,14 @@ export function patchCookieStorage(source) {
 export function patchChestTimers(source) {
   const timer = 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;';
   const visibility = 'function Xr(e){return Pa.value?e||yr.value?!0:T.value:!1}';
-  if (source.split(timer).length !== 2 || source.split(visibility).length !== 2) {
+  const panes = 'const zr=pe(()=>Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));';
+  if (source.split(timer).length !== 2 || source.split(visibility).length !== 2 || source.split(panes).length !== 2) {
     throw new Error('Chest timer or visibility code changed; reconcile the frontend before building.');
   }
   return source
     .replace(timer, 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}Qn.value=!0;')
-    .replace(visibility, 'function Xr(e){return A.isLoggedIn&&yr.value?!0:Pa.value?e?!0:T.value:!1}');
+    .replace(visibility, 'function Xr(e){return !!(A.isLoggedIn&&yr.value||Pa.value&&e)}')
+    .replace(panes, 'const zr=pe(()=>A.isLoggedIn&&yr.value?!0:Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>A.isLoggedIn&&yr.value?!0:Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));');
 }
 
 export function patchLoginReady(source) {
