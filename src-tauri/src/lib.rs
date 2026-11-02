@@ -3,6 +3,7 @@ mod input;
 mod menu;
 mod pointer;
 mod shape;
+mod shortcuts;
 mod socket;
 mod storage;
 mod system;
@@ -68,6 +69,9 @@ fn handle(invoke: Invoke) -> bool {
         storage::save_key_press_count,
         storage::load_cumulative_click_count,
         storage::save_cumulative_click_count,
+        shortcuts::get_app_shortcuts,
+        shortcuts::set_app_shortcuts,
+        shortcuts::set_shortcut_capture,
         input::get_input_status,
         input::request_input_access,
         input::resume_input_monitor,
@@ -81,7 +85,6 @@ fn handle(invoke: Invoke) -> bool {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(windows::WindowState::default())
@@ -94,6 +97,7 @@ pub fn run() {
                 app.path().app_data_dir()?.join("counters.json"),
             ));
             menu::setup(&handle)?;
+            shortcuts::setup(&handle)?;
             app.manage(system::start_network_monitor(handle.clone())?);
             windows::setup(&handle)?;
             if let Err(error) = input::start(handle.clone()) {

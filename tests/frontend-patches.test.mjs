@@ -55,12 +55,12 @@ test('login tokens survive when WebKitGTK rejects tauri:// cookies', () => {
 });
 
 test('chest timers are not blocked by activity config readiness', () => {
-  const source = 'function Vn(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;const e=os()}function Xr(e){return Pa.value?e||yr.value?!0:T.value:!1}const zr=pe(()=>Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));';
+  const source = 'function Vn(){if(!R.isLoggedIn){Nt.value=0,Ht.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;const e=is()}function Xr(e){return Ta.value?e||yr.value?!0:T.value:!1}const zr=pe(()=>Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));';
   const patched = patchChestTimers(source);
   assert.ok(patched.includes('Qn.value=!0;'));
   assert.ok(!patched.includes('if(!Qn.value)return;'));
-  assert.ok(patched.includes('!!(A.isLoggedIn&&yr.value||Pa.value&&e)'));
-  assert.ok(patched.includes('const zr=pe(()=>A.isLoggedIn&&yr.value?!0:'));
+  assert.ok(patched.includes('!!(R.isLoggedIn&&yr.value||Ta.value&&e)'));
+  assert.ok(patched.includes('const zr=pe(()=>R.isLoggedIn&&yr.value?!0:'));
   assert.throws(() => patchChestTimers('function Vn(){if(!Qn.value)return;}'), /Chest timer or visibility/);
 });
 

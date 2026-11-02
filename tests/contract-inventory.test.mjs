@@ -9,12 +9,12 @@ const contract = JSON.parse(fs.readFileSync(new URL('./contracts.json', import.m
 const runtimeCommands = contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('application-runtime'));
 
 test('CN runtime and Windows installer have separate exhaustive inventories', () => {
-  assert.equal(runtimeCommands.length, 50);
+  assert.equal(runtimeCommands.length, 53);
   assert.equal(contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('windows-installer')).length, 9);
-  assert.equal(contract.commands.filter(item => item.kind === 'plugin').length, 119);
-  assert.equal(contract.events.length, 60);
+  assert.equal(contract.commands.filter(item => item.kind === 'plugin').length, 116);
+  assert.equal(contract.events.length, 63);
   assert.equal(contract.sourceApplication.region, 'CN');
-  assert.equal(contract.sourceApplication.entryModule, 'index-DsnG26DH.js');
+  assert.equal(contract.sourceApplication.entryModule, 'index-CuzHFfJW.js');
   const lock = JSON.parse(fs.readFileSync(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
   assert.equal(contract.sourceApplication.version, lock.version);
   assert.ok(!Object.hasOwn(contract.runtimeConstants, 'authCallbackScheme'));
@@ -37,7 +37,7 @@ test('all command and event evidence preserves JavaScript and UTF-8 byte ranges'
     assert.ok(site.context.includes(site.source));
   }
   assert.ok(contract.commands.find(item => item.name === 'get_boot_diagnostics').callSites.some(site => site.callee === 'Ct'));
-  assert.ok(contract.commands.find(item => item.name === 'open_panel_window').callSites.some(site => site.callee === '_'));
+  assert.ok(contract.commands.find(item => item.name === 'open_panel_window').callSites.some(site => site.callee === 'u'));
 });
 
 test('remaining dynamic invoke sites are framework plugin factories rather than missing application commands', () => {
@@ -47,6 +47,20 @@ test('remaining dynamic invoke sites are framework plugin factories rather than 
     assert.equal(site.category, 'framework-plugin-factory');
     assert.match(site.source, /plugin:\$\{/);
   }
+});
+
+test('1.0.3 moved application shortcuts into the native layer', () => {
+  for (const name of ['get_app_shortcuts', 'set_app_shortcuts', 'set_shortcut_capture']) {
+    const command = contract.commands.find(item => item.name === name);
+    assert.equal(command.kind, 'application', `${name} is not an application command`);
+    assert.deepEqual(command.scopes, ['application-runtime']);
+    assert.ok(command.callSites.length > 0, `${name} has no call site`);
+  }
+  for (const name of ['app-shortcut', 'app-shortcuts-changed', 'tray-toggle-game-mode']) {
+    const event = contract.events.find(item => item.name === name);
+    assert.deepEqual(event.operations, ['listen'], `${name} is no longer a native event`);
+  }
+  assert.ok(!contract.commands.some(item => item.name.startsWith('plugin:dialog|')));
 });
 
 test('keyboard and mouse payloads cannot accidentally share a count stream', () => {

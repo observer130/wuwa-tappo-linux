@@ -45,7 +45,7 @@ node scripts/sync-upstream.mjs
 
 ```bash
 node scripts/extract-assets.mjs \
-  --installer /path/to/WuwaTappo-cn_1.0.2_x64-setup.exe \
+  --installer /path/to/WuwaTappo-cn_1.0.3_x64-setup.exe \
   --sevenzip "$(command -v 7z)" \
   --output frontend
 ```
@@ -105,10 +105,11 @@ node scripts/inventory-contract.mjs frontend/assets tests/contracts.json
 npm test                   # 若出现未实现命令，backend-coverage 会失败
 ```
 
-1. 根据契约差异补 Rust 命令。
+1. 根据契约差异补 Rust 命令。1.0.3 新增的快捷键表由 `src-tauri/src/shortcuts.rs` 提供
+   （`get_app_shortcuts` / `set_app_shortcuts` / `set_shortcut_capture` 与 `app-shortcut` 事件）。
 2. 检查 `prepare-frontend` 是否仍能命中全部锚点。
-3. 在本地验证登录、面板、输入计数和联机。
-4. 更新 `CHANGELOG.md` 与版本号（`package.json`、`src-tauri/Cargo.toml`、`tauri.conf.json`）。
+3. 在本地验证登录、面板、输入计数、快捷键和联机。
+4. 更新版本号（`package.json`、`src-tauri/Cargo.toml`、`tauri.conf.json`）。
 
 `upstream-cn.json` 由 `sync-upstream` 维护，包含官方下载地址、大小、SHA-256 和 Tauri 签名，请勿手工编造。
 

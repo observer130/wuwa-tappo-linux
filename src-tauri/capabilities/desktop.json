@@ -30,7 +30,6 @@
     "core:window:allow-close",
     "core:webview:allow-set-webview-zoom",
     "autostart:default",
-    "dialog:default",
     "process:allow-restart",
     "opener:default"
   ]

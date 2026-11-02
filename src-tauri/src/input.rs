@@ -148,10 +148,11 @@ impl InputMonitor {
             .map_err(|_| "input_status_lock_poisoned")? = None;
         let state = self.state.clone();
         let worker_app = app.clone();
+        let shortcuts = crate::shortcuts::shared(&app);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let handle = thread::Builder::new()
             .name("wuwatappo-input".into())
-            .spawn(move || run_monitor(worker_app, state, ready_sender))
+            .spawn(move || run_monitor(worker_app, state, shortcuts, ready_sender))
             .map_err(|error| format!("input_worker_spawn_failed: {error}"))?;
         *worker = Some(handle);
         drop(worker);
@@ -465,9 +466,30 @@ fn over_auxiliary(app: &AppHandle, css_x: f64, css_y: f64) -> bool {
         .unwrap_or(false)
 }
 
+/// 1.0.3 moved the shortcut table into the native layer. The same evdev stream
+/// that counts key presses therefore also drives `app-shortcut`.
+fn dispatch_shortcut(
+    app: &AppHandle,
+    shortcuts: &crate::shortcuts::Shortcuts,
+    held: &BTreeSet<u16>,
+    code: u16,
+) {
+    if crate::shortcuts::is_modifier(code) {
+        return;
+    }
+    let Some(key) = crate::shortcuts::dom_key_code(code) else {
+        return;
+    };
+    let modifiers = crate::shortcuts::modifiers_from(held);
+    if let Some(action) = shortcuts.action_for(key, modifiers) {
+        let _ = app.emit("app-shortcut", action);
+    }
+}
+
 fn run_monitor(
     app: AppHandle,
     state: Arc<MonitorState>,
+    shortcuts: crate::shortcuts::Shortcuts,
     ready: mpsc::SyncSender<Result<(), String>>,
 ) {
     let mut devices = Vec::new();
@@ -483,6 +505,9 @@ fn run_monitor(
     let _ = ready.send(Ok(()));
 
     let mut pressed_keys = BTreeSet::new();
+    // Modifier state for shortcut matching. Unlike `pressed_keys`, this ignores
+    // auto-repeat so a held Ctrl cannot drop out of a chord.
+    let mut held_keys = BTreeSet::new();
     let mut pressed_buttons: BTreeMap<&'static str, bool> = BTreeMap::new();
     let mut pressed_gamepad_buttons = BTreeSet::new();
     let mut last_scan = Instant::now();
@@ -602,11 +627,17 @@ fn run_monitor(
                             pressed_gamepad_buttons.remove(&event.code);
                         }
                     } else if event.code < 256 {
+                        if event.value == 1 {
+                            held_keys.insert(event.code);
+                        } else if event.value == 0 {
+                            held_keys.remove(&event.code);
+                        }
                         let down = event.value == 1;
                         if down {
                             if !pressed_keys.insert(event.code) {
                                 continue;
                             }
+                            dispatch_shortcut(&app, &shortcuts, &held_keys, event.code);
                         } else if !pressed_keys.remove(&event.code) {
                             continue;
                         }
@@ -623,6 +654,7 @@ fn run_monitor(
                     known.remove(&device._path);
                     // Releases from the removed device will never arrive.
                     pressed_keys.clear();
+                    held_keys.clear();
                     pressed_buttons.clear();
                     pressed_gamepad_buttons.clear();
                 }

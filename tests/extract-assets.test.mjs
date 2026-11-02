@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { brotliCompressSync } from 'node:zlib';
-import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath } from '../scripts/extract-assets.mjs';
+import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath, selectEmbeddedPayload } from '../scripts/extract-assets.mjs';
 
 function fixture(assets) {
   const bytes = Buffer.alloc(8192);
@@ -89,6 +89,17 @@ test('writes a complete extraction without changing its filenames', async () => 
     assert.equal(manifest.length, 2);
     assert.equal(await readFile(path.join(directory, 'assets/arbitrary.bin'), 'utf8'), 'bytes');
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('selects the Tauri payload even when NSIS renames the inner executable', () => {
+  const selected = selectEmbeddedPayload([
+    { name: 'uninstall.exe', bytes: fixture([]) },
+    { name: 'not-a-pe', bytes: Buffer.from('MZ') },
+    { name: '$_21_', bytes: fixture([['/index.html', '<html/>']]) },
+  ]);
+  assert.equal(selected.name, '$_21_');
+  assert.deepEqual(selected.entries.map(entry => entry.key), ['/index.html']);
+  assert.throws(() => selectEmbeddedPayload([{ name: 'uninstall.exe', bytes: fixture([]) }]), /No Tauri frontend found in the embedded installer payload/);
 });
 
 test('finds embedded NSIS by PE section end and bounded NSIS header', () => {

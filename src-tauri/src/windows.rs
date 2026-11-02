@@ -317,6 +317,10 @@ fn build_window(
         move |event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 crate::socket::close_window(&app, &label);
+                if label == "panel" {
+                    // Never leave shortcut recording latched after the panel goes away.
+                    crate::shortcuts::shared(&app).set_capture(false);
+                }
             }
             if matches!(
                 event,
@@ -493,6 +497,9 @@ fn close(app: &AppHandle, label: &str) -> Result<Value, String> {
         w.hide().map_err(err)?;
     }
     if label == "panel" {
+        // The settings panel owns shortcut recording; closing it must release
+        // the capture latch even if the webview never saw a blur event.
+        crate::shortcuts::shared(app).set_capture(false);
         app.emit("cat-panel-window-closed", ()).map_err(err)?;
     }
     if label == "login" {

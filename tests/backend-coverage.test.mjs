@@ -6,7 +6,7 @@ const root = new URL('../', import.meta.url);
 const contract = JSON.parse(await readFile(new URL('tests/contracts.json', root), 'utf8'));
 
 test('every official runtime command has a Linux handler', async () => {
-  const modules = ['lib', 'windows', 'storage', 'input', 'system', 'socket'];
+  const modules = ['lib', 'windows', 'storage', 'input', 'system', 'socket', 'shortcuts'];
   const implementation = (await Promise.all(
     modules.map(name => readFile(new URL(`src-tauri/src/${name}.rs`, root), 'utf8')),
   )).join('\n');

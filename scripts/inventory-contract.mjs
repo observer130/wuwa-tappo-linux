@@ -415,7 +415,6 @@ export function inventoryAssets(assetDirectory) {
       maxSafeClickCount: Number.MAX_SAFE_INTEGER,
       ...(typeof authCallbackScheme === 'string' ? { authCallbackScheme } : {}),
       defaultPosition: metadata.defaultPosition,
-      hotkeys: { switchDisplay: ['F8', 'f8'], toggleVisibility: ['F9', 'f9'], secondaryAction: ['F4', 'f4'], devtools: ['F5', 'f5'] },
     },
     bootContract: {
       entry: `index.html -> ${metadata.entry.file} router / -> ${mainModule} onMounted`,

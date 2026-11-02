@@ -29,7 +29,7 @@ GDK_BACKEND=x11 WEBKIT_FORCE_COMPOSITING_MODE=1 ./run.sh
 
 先按一次 `F7`。官方“游戏模式”会禁用与桌宠的交互，而且这个开关会持久化；日志中 `[SETTINGS] ... game_mode=true` 表示它正在生效。再按 `F7` 或重新打开设置关闭游戏模式即可恢复。
 
-如果 `F7` 没有反应，再检查 `[INPUT] granted=true running=true` 与 `[HIT]` 日志。
+如果 `F7` 没有反应，先确认快捷键没有被改掉（设置页可查看），再检查 `[INPUT] granted=true running=true` 与 `[HIT]` 日志。1.0.3 起快捷键由原生层从 `evdev` 匹配，输入监听未启动时不会生效。
 
 ## 键盘/点击计数不动
 
@@ -53,7 +53,7 @@ newgrp input
 
 ## 手柄按键不计入点击
 
-1.0.2 起官方前端会把 `gamepad-button-press` 计入点击。Linux 后端直接从 `/dev/input/event*` 读取手柄按键与方向键，同样需要 `input` 组权限；确认：
+1.0.2 起官方前端会把 `gamepad-button-press` 计入点击（1.0.3 同样如此）。Linux 后端直接从 `/dev/input/event*` 读取手柄按键与方向键，同样需要 `input` 组权限；确认：
 
 ```bash
 ls -l /dev/input/by-id/ | grep -i -E 'joystick|gamepad'
@@ -64,11 +64,11 @@ id -nG "$USER"            # 应包含 input
 
 ## 点击宝箱后闪退
 
-1.0.2-1 在点击宝箱且积分不足 1000 时会触发 Toast；此时隐藏的 Toast 窗口尚未 realize，设置点击穿透会触发 tao 的 `Option::unwrap()` panic 并 abort。1.0.2-2 已改为先显示 Toast 再设置点击穿透，请更新到该版本。
+1.0.2-1 在点击宝箱且积分不足 1000 时会触发 Toast；此时隐藏的 Toast 窗口尚未 realize，设置点击穿透会触发 tao 的 `Option::unwrap()` panic 并 abort。1.0.2-2 起改为先显示 Toast 再设置点击穿透，现在的 1.0.3-1 已包含该修复；如果你仍在旧构建上，请更新到最新发布版。
 
 ## 宝箱一直是灰色图标
 
-如果你使用的是 1.0.2-1 之前的构建，宝箱按钮可能一直处于灰色加载态，且倒计时不出现。请更新到包含宝箱计时修复的 1.0.2-1 构建；宝箱可领取时会显示彩色按钮，领取后才会显示下一轮倒计时。
+如果你使用的是 1.0.2-1 之前的构建，宝箱按钮可能一直处于灰色加载态，且倒计时不出现。1.0.2-1 起的构建包含宝箱计时修复（当前 1.0.3-1 同样包含）：宝箱可领取时会显示彩色按钮，领取后才会显示下一轮倒计时。
 
 ## 提示“无法读取键鼠监听状态”/“监听尚未启动”
 

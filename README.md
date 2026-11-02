@@ -1,17 +1,15 @@
 # Wuwa Tappo CN · Linux 社区移植版
 
 [![License: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
-[![Official UI](https://img.shields.io/badge/official%20UI-1.0.2-c8a2ff.svg)](upstream-cn.json)
+[![Official UI](https://img.shields.io/badge/official%20UI-1.0.3-c8a2ff.svg)](upstream-cn.json)
 
 把《鸣潮》官方桌宠 **Wuwa Tappo 国服** 的完整官方桌面端移植到 Linux。界面、角色、字体与在线协议保持官方原样，原生后端使用 **Rust + Tauri 2 + WebKitGTK** 重建，不需要 Wine 或虚拟机。
-
-> 这是社区非官方移植，不是库洛官方 Linux 客户端。登录、抽卡、联机等在线功能仍连接 Kuro 官方服务，请使用自己的国服账号。官方美术与素材版权归 **KURO GAMES / Irox Games**，不适用本仓库的 MIT 许可，详见下文[第三方内容与许可](#第三方内容与许可)。
 
 ## 功能
 
 - **官方桌宠主界面**：透明、无边框、全屏覆盖层，保留官方角色、宝箱、点击计数、设置入口与多语言文案。
 - **官方多窗口**：背包、图鉴、合成、联机、设置，登录窗口，关于、OSS 声明、更新/维护提示，以及 Toast。
-- **全局键盘、鼠标与手柄**：基于 `evdev` 读取 `/dev/input/event*`，统计打字、点击与手柄按键；支持官方快捷键、点击穿透和按角色区域命中（联机时区分不同桌宠）。
+- **全局键盘、鼠标与手柄**：基于 `evdev` 读取 `/dev/input/event*`，统计打字、点击与手柄按键；快捷键由后端全局匹配（1.0.3 起可在设置中自定义），并支持点击穿透和按角色区域命中（联机时区分不同桌宠）。
 - **原生 WebSocket 代理**：联机房间走 Rust `tokio-tungstenite`，绕开 WebKitGTK 对跨域 WebSocket 的限制，同时只允许官方国服端点。
 - **多显示器与窗口几何**：工作区安全区域、任务栏 insets、显示器切换、窗口折叠、鼠标穿透命中测试。
 - **本地数据**：点击计数原子写入；日志做脱敏和滚动；不内置任何账号、Cookie 或遥测上传。
@@ -44,9 +42,9 @@ sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3
 从 [Releases](https://github.com/observer130/wuwa-tappo-linux/releases) 下载 `wuwa-tappo-linux-<version>-x86_64.tar.gz`，校验后解压：
 
 ```bash
-sha256sum -c wuwa-tappo-linux-1.0.2-3-x86_64.tar.gz.sha256  # 可选
-tar -xzf wuwa-tappo-linux-1.0.2-3-x86_64.tar.gz
-cd wuwa-tappo-linux-1.0.2-3-x86_64
+sha256sum -c wuwa-tappo-linux-1.0.3-1-x86_64.tar.gz.sha256  # 可选
+tar -xzf wuwa-tappo-linux-1.0.3-1-x86_64.tar.gz
+cd wuwa-tappo-linux-1.0.3-1-x86_64
 ./install.sh   # 加入 input 组、注册桌面菜单项
 ./run.sh       # 启动
 ```
@@ -61,7 +59,7 @@ cd wuwa-tappo-linux-1.0.2-3-x86_64
 
 ```bash
 npm ci
-npm run upstream:update          # 下载并校验官方 1.0.2 安装包，提取 frontend/
+npm run upstream:update          # 下载并校验官方 1.0.3 安装包，提取 frontend/
 npm run icons
 npm run prepare:frontend
 cargo build --release --manifest-path src-tauri/Cargo.toml
@@ -79,13 +77,15 @@ npm run package
 
 ## 快捷键
 
-以下快捷键由官方前端注册（需窗口获得焦点/输入监听可用）：
+1.0.3 起官方把快捷键交给原生层管理：设置页可以修改绑定，Linux 后端直接从 `evdev` 匹配，因此桌宠不在前台时也能生效（需要 `input` 组权限与可用的输入监听）。绑定保存在应用数据目录的 `shortcuts.json`。
 
-| 按键 | 行为 |
+| 默认按键 | 行为 |
 | --- | --- |
 | `F7` | 切换游戏模式（临时禁用与桌宠的交互） |
 | `F8` | 在多显示器之间切换主窗口 |
 | `F9` | 显示 / 隐藏桌宠 |
+
+在设置中可以把任意动作改为 F1–F24，或带 `Ctrl` / `Alt` / `Shift` / `Win` 的组合键；清空绑定即可停用该动作。录制新快捷键期间后端会暂停匹配，避免边录制边触发。若输入监听未启动，快捷键与计数都不会生效，请先按上文把当前用户加入 `input` 组。少数无法映射到标准键码的多媒体键会被设置页接受，但不会触发动作。
 
 界面内还可点击右下角宝箱领取奖励、点击设置按钮打开背包 / 图鉴 / 合成 / 联机 / 设置。
 
@@ -95,6 +95,7 @@ npm run package
 
 - 应用数据：`~/.local/share/dev.w33d.wuwatappo.cn.linux/`
   - `counters.json`：按键与点击计数（按账号/环境区分）。
+  - `shortcuts.json`：设置页保存的快捷键绑定。
   - `logs/app.log`：脱敏后的运行日志，超过 2 MiB 自动滚动。
   - WebKit 的 Cookie / LocalStorage 也位于该应用数据目录下。
 - 日志会对 URL 查询参数、token、Cookie、Authorization 等做脱敏；不会主动上传。
@@ -106,7 +107,7 @@ npm run package
 
 ### Wuwa Tappo 国服官方资源
 
-本项目使用《鸣潮》桌宠 Wuwa Tappo 国服客户端（当前锁定 **1.0.2**）的界面、角色、美术、音频、字体及其他内嵌资源，并通过官方服务完成登录、背包、联机等业务请求。
+本项目使用《鸣潮》桌宠 Wuwa Tappo 国服客户端（当前锁定 **1.0.3**）的界面、角色、美术、音频、字体及其他内嵌资源，并通过官方服务完成登录、背包、联机等业务请求。
 
 - 相关名称、商标、美术与素材版权归 **KURO GAMES** 与 **Irox Games** 及各自权利人所有。
 - 官方资源**不适用**本仓库的 MIT 许可；本项目仅用于个人桌面美化，不得用于商业再分发。

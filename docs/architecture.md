@@ -84,6 +84,15 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 - 按键去重、鼠标按下状态与手柄按住状态由后端维护，避免重复计数。
 - 需要 `input` 组读权限；失败时前端显示可恢复提示，并提供 `resume_input_monitor`。
 
+### 快捷键
+
+1.0.3 起官方前端不再在 webview 内匹配 F7/F8/F9，而是通过原生命令与事件管理快捷键：
+
+- `shortcuts.rs` 维护 `动作 → {key, modifiers}` 表，默认 `gameMode`=F7、`switchScreen`=F8、`togglePet`=F9，持久化到应用数据目录的 `shortcuts.json`。
+- `get_app_shortcuts` 返回当前表；`set_app_shortcuts` 校验后写盘并广播 `app-shortcuts-changed`（重复组合返回 `duplicate`）；`set_shortcut_capture` 在设置页录制期间暂停匹配。
+- 输入线程用独立的 `held_keys` 跟踪修饰键（忽略自动重复），把 evdev 键码翻译成官方前端使用的 DOM `keyCode`，命中后广播 `app-shortcut`（负载为动作名，如 `"togglePet"`）。
+- 因此快捷键在窗口失焦时同样生效，但依赖 `input` 监听；监听不可用时快捷键与点击计数一起失效。
+
 ## 原生 WebSocket 代理
 
 `scripts/websocket.js` 只在目标为 `wss://api-mc-wuwatappo.kurogames-global.com/socket.io/` 时替换浏览器 `WebSocket`：
@@ -114,7 +123,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 ### 宝箱计时
 
-官方 1.0.2 在计算宝箱倒计时前会等待活动配置的 `server_time` 就绪。若登录态在 Vue 挂载前已经恢复，这个就绪标记可能一直为 `false`，两个宝箱按钮会停留在 `reward-btn--loading` 的灰色禁用态。
+官方前端在计算宝箱倒计时前会等待活动配置的 `server_time` 就绪。若登录态在 Vue 挂载前已经恢复，这个就绪标记可能一直为 `false`，两个宝箱按钮会停留在 `reward-btn--loading` 的灰色禁用态。
 
 `patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`，与 1.0.1 的行为一致。补丁还让“总是展示宝箱”在点击余额不足 1000 时也强制显示倒计时区域，并且同时显示左右两个宝箱；关闭开关时不再因鼠标悬停而常驻倒计时。宝箱已可领取时显示彩色按钮，领取后显示倒计时。
 
