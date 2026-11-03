@@ -8,12 +8,8 @@
 ## 功能
 
 - **官方桌宠主界面**：透明、无边框、全屏覆盖层，保留官方角色、宝箱、点击计数、设置入口与多语言文案。
-- **官方多窗口**：背包、图鉴、合成、联机、设置，登录窗口，关于、OSS 声明、更新/维护提示，以及 Toast。
-- **全局键盘、鼠标与手柄**：基于 `evdev` 读取 `/dev/input/event*`，统计打字、点击与手柄按键；快捷键由后端全局匹配（1.0.3 起可在设置中自定义），并支持点击穿透和按角色区域命中（联机时区分不同桌宠）。
-- **原生 WebSocket 代理**：联机房间走 Rust `tokio-tungstenite`，绕开 WebKitGTK 对跨域 WebSocket 的限制，同时只允许官方国服端点。
-- **多显示器与窗口几何**：工作区安全区域、任务栏 insets、显示器切换、窗口折叠、鼠标穿透命中测试。
-- **本地数据**：点击计数原子写入；日志做脱敏和滚动；不内置任何账号、Cookie 或遥测上传。
-- **开机自启**：复用官方设置页的“开机启动”开关（`tauri-plugin-autostart`）。
+- **全局键盘、鼠标与手柄**：统计打字、点击与手柄按键；快捷键由后端全局匹配（支持自定义），并支持点击穿透和按角色区域命中。
+- **联机房间**：支持多人联机房间。
 
 ## 系统要求
 
@@ -42,9 +38,9 @@ sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3
 从 [Releases](https://github.com/observer130/wuwa-tappo-linux/releases) 下载 `wuwa-tappo-linux-<version>-x86_64.tar.gz`，校验后解压：
 
 ```bash
-sha256sum -c wuwa-tappo-linux-1.0.3-1-x86_64.tar.gz.sha256  # 可选
-tar -xzf wuwa-tappo-linux-1.0.3-1-x86_64.tar.gz
-cd wuwa-tappo-linux-1.0.3-1-x86_64
+sha256sum -c wuwa-tappo-linux-x.y.z-1-x86_64.tar.gz.sha256  # 可选
+tar -xzf wuwa-tappo-linux-x.y.z-1-x86_64.tar.gz
+cd wuwa-tappo-linux-x.y.z-1-x86_64
 ./install.sh   # 加入 input 组、注册桌面菜单项
 ./run.sh       # 启动
 ```
@@ -59,7 +55,7 @@ cd wuwa-tappo-linux-1.0.3-1-x86_64
 
 ```bash
 npm ci
-npm run upstream:update          # 下载并校验官方 1.0.3 安装包，提取 frontend/
+npm run upstream:update
 npm run icons
 npm run prepare:frontend
 cargo build --release --manifest-path src-tauri/Cargo.toml
@@ -77,17 +73,11 @@ npm run package
 
 ## 快捷键
 
-1.0.3 起官方把快捷键交给原生层管理：设置页可以修改绑定，Linux 后端直接从 `evdev` 匹配，因此桌宠不在前台时也能生效（需要 `input` 组权限与可用的输入监听）。绑定保存在应用数据目录的 `shortcuts.json`。
-
 | 默认按键 | 行为 |
 | --- | --- |
 | `F7` | 切换游戏模式（临时禁用与桌宠的交互） |
 | `F8` | 在多显示器之间切换主窗口 |
 | `F9` | 显示 / 隐藏桌宠 |
-
-在设置中可以把任意动作改为 F1–F24，或带 `Ctrl` / `Alt` / `Shift` / `Win` 的组合键；清空绑定即可停用该动作。录制新快捷键期间后端会暂停匹配，避免边录制边触发。若输入监听未启动，快捷键与计数都不会生效，请先按上文把当前用户加入 `input` 组。少数无法映射到标准键码的多媒体键会被设置页接受，但不会触发动作。
-
-界面内还可点击右下角宝箱领取奖励、点击设置按钮打开背包 / 图鉴 / 合成 / 联机 / 设置。
 
 当前版本没有托盘图标。关闭主窗口或任务栏关闭会直接退出应用；`F9` 隐藏桌宠后进程仍在，再按一次 `F9` 即可恢复。
 
@@ -107,7 +97,7 @@ npm run package
 
 ### Wuwa Tappo 国服官方资源
 
-本项目使用《鸣潮》桌宠 Wuwa Tappo 国服客户端（当前锁定 **1.0.3**）的界面、角色、美术、音频、字体及其他内嵌资源，并通过官方服务完成登录、背包、联机等业务请求。
+本项目使用《鸣潮》桌宠 Wuwa Tappo 国服客户端的界面、角色、美术、音频、字体及其他内嵌资源，并通过官方服务完成登录、背包、联机等业务请求。
 
 - 相关名称、商标、美术与素材版权归 **KURO GAMES** 与 **Irox Games** 及各自权利人所有。
 - 官方资源**不适用**本仓库的 MIT 许可；本项目仅用于个人桌面美化，不得用于商业再分发。
