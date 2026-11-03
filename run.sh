@@ -19,7 +19,12 @@ fi
 export GDK_BACKEND=x11
 export WEBKIT_FORCE_COMPOSITING_MODE=1
 
-LOCK="${XDG_RUNTIME_DIR:-/tmp}/wuwa-tappo-linux.lock"
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  LOCK="$XDG_RUNTIME_DIR/wuwa-tappo-linux.lock"
+else
+  # /tmp is shared between users.
+  LOCK="/tmp/wuwa-tappo-linux-${UID}.lock"
+fi
 exec 9>"$LOCK"
 if ! flock -n 9; then
   echo "Wuwa Tappo is already running."

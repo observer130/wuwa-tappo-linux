@@ -28,6 +28,7 @@ fn acquire_at(path: &Path) -> io::Result<Option<InstanceLock>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .mode(0o600)
         .open(path)?;
 
@@ -50,14 +51,18 @@ fn acquire_at(path: &Path) -> io::Result<Option<InstanceLock>> {
 }
 
 fn lock_path() -> PathBuf {
-    lock_path_for(std::env::var_os("XDG_RUNTIME_DIR"))
+    lock_path_for(std::env::var_os("XDG_RUNTIME_DIR"), unsafe {
+        libc::getuid()
+    })
 }
 
-fn lock_path_for(runtime_dir: Option<OsString>) -> PathBuf {
-    let base = runtime_dir
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| OsString::from("/tmp"));
-    PathBuf::from(base).join(LOCK_FILE)
+fn lock_path_for(runtime_dir: Option<OsString>, uid: u32) -> PathBuf {
+    match runtime_dir.filter(|value| !value.is_empty()) {
+        Some(base) => PathBuf::from(base).join(LOCK_FILE),
+        // /tmp is shared between users. Include the uid so one user's instance
+        // cannot make the app fail closed for another user.
+        None => PathBuf::from("/tmp").join(format!("wuwa-tappo-linux-{uid}.instance.lock")),
+    }
 }
 
 #[cfg(test)]
@@ -79,16 +84,16 @@ mod tests {
     #[test]
     fn runtime_dir_wins_and_tmp_is_the_fallback() {
         assert_eq!(
-            lock_path_for(Some(OsString::from("/run/user/1000"))),
+            lock_path_for(Some(OsString::from("/run/user/1000")), 1000),
             PathBuf::from("/run/user/1000/wuwa-tappo-linux.instance.lock")
         );
         assert_eq!(
-            lock_path_for(Some(OsString::new())),
-            PathBuf::from("/tmp/wuwa-tappo-linux.instance.lock")
+            lock_path_for(Some(OsString::new()), 1000),
+            PathBuf::from("/tmp/wuwa-tappo-linux-1000.instance.lock")
         );
         assert_eq!(
-            lock_path_for(None),
-            PathBuf::from("/tmp/wuwa-tappo-linux.instance.lock")
+            lock_path_for(None, 1000),
+            PathBuf::from("/tmp/wuwa-tappo-linux-1000.instance.lock")
         );
     }
 
