@@ -294,6 +294,17 @@ fn build_window(
     .on_page_load(|window, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
             crate::socket::close_window(window.app_handle(), window.label());
+            // A reload replaces the JS listener that acknowledges
+            // `login_window_ready`, and may leave shortcut capture latched in
+            // a destroyed document. Reset the native half of both protocols.
+            if window.label() == "login" {
+                if let Some(state) = window.app_handle().try_state::<WindowState>() {
+                    state.login_ready.store(false, Ordering::Release);
+                }
+            }
+            if window.label() == "panel" {
+                crate::shortcuts::shared(window.app_handle()).set_capture(false);
+            }
         }
     })
     .inner_size(size.0 * css_scale, size.1 * css_scale)
@@ -325,6 +336,12 @@ fn build_window(
                 if label == "panel" {
                     // Never leave shortcut recording latched after the panel goes away.
                     crate::shortcuts::shared(&app).set_capture(false);
+                }
+                if label == "login" {
+                    // A replacement login window must wait for its own readiness event.
+                    app.state::<WindowState>()
+                        .login_ready
+                        .store(false, Ordering::Release);
                 }
             }
             if matches!(
@@ -378,6 +395,10 @@ fn build_window(
                     }
                 }
                 if label == "panel" {
+                    // Closing through the WM button hides the window, so the
+                    // Destroyed handler will not run. Release the shortcut
+                    // recorder latch here as well.
+                    crate::shortcuts::shared(&app).set_capture(false);
                     if let Err(error) = app.emit("cat-panel-window-closed", ()) {
                         eprintln!("Panel close event failed: {error}");
                     }
@@ -544,7 +565,13 @@ pub fn dispatch(
             }
             *state.pending_login.lock().map_err(err)? =
                 Some(json!({"intent":intent,"compact":args.get("compact")}));
-            let (w, _) = show_aux(app, "login", "/login", (600., 660.))?;
+            let (w, _) = match show_aux(app, "login", "/login", (600., 660.)) {
+                Ok(window) => window,
+                Err(error) => {
+                    *state.pending_login.lock().map_err(err)? = None;
+                    return Err(error);
+                }
+            };
             app.emit("cat-login-overlay", json!({"open": true}))
                 .map_err(err)?;
             if state.login_ready.load(Ordering::Acquire) {
