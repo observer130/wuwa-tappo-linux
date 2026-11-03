@@ -61,6 +61,20 @@ export function patchLoginReady(source) {
   return source.replace(original, replacement);
 }
 
+export const SESSION_RESTORE_SOURCE = 'function gn(e={}){return ie(),ge("infoToken")?D||(D=(async()=>{try{return await Ke(),e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success")),!0}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),c("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:d(n)},"warn"),!1}finally{D=null}})(),D):Promise.resolve(!1)}';
+
+// A cold start can race the network coming up. The official code treats every
+// `user/me` failure as "no saved login", so a transient DNS/connect error hides
+// a perfectly valid token and makes the app look logged out. Retry only the
+// transport failures; auth rejections (10002/10003) must still log out at once.
+export function patchSessionRestore(source) {
+  if (source.split(SESSION_RESTORE_SOURCE).length !== 2) {
+    throw new Error('Original session restore flow changed; reconcile auth retry before building.');
+  }
+  const replacement = 'function gn(e={}){return ie(),ge("infoToken")?D||(D=(async()=>{try{for(let t=0;t<3;t+=1){try{await Ke();e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success"));return!0}catch(n){const s=d(n);if(t<2&&(s==="network_error"||s==="timeout")){await new Promise(o=>setTimeout(o,1e3*(t+1)));continue}throw n}}return!1}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),c("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:d(n)},"warn"),!1}finally{D=null}})(),D):Promise.resolve(!1)}';
+  return source.replace(SESSION_RESTORE_SOURCE, replacement);
+}
+
 export function patchAbout(source) {
   const headings = [...source.matchAll(/<h2 (data-v-[a-f0-9]+)>系统配置<\/h2>/g)];
   if (headings.length !== 1) {

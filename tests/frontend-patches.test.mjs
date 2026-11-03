@@ -8,6 +8,8 @@ import {
   patchDomesticSdkUrls,
   patchIndexLanguage,
   patchLoginReady,
+  patchSessionRestore,
+  SESSION_RESTORE_SOURCE,
 } from '../scripts/frontend-patches.mjs';
 
 test('CN SDK script and stylesheet use HTTPS from the local Tauri origin', () => {
@@ -69,6 +71,44 @@ test('login readiness is reported after the Vue listener is installed', () => {
   assert.ok(result.indexOf('await o(u,') < result.indexOf('invoke("login_window_ready")'));
   assert.ok(result.includes('return unlisten'));
   assert.throws(() => patchLoginReady(''), /listener bridge changed/);
+});
+
+test('session restore retries transport failures but not auth rejections', async () => {
+  const patched = patchSessionRestore(SESSION_RESTORE_SOURCE);
+  assert.ok(patched.includes('for(let t=0;t<3;t+=1)'));
+  assert.ok(patched.includes('s==="network_error"||s==="timeout"'));
+  assert.throws(() => patchSessionRestore('function gn(e={}){}'), /session restore flow changed/);
+
+  async function run(failures) {
+    const attempts = [];
+    const context = {
+      D: null,
+      ie: () => {},
+      ge: () => 'token',
+      Ke: async () => {
+        attempts.push(1);
+        const failure = failures[attempts.length - 1];
+        if (failure) throw { reason: failure };
+      },
+      window: { dispatchEvent: () => {} },
+      CustomEvent: class {},
+      console: { error: () => {} },
+      c: () => {},
+      l: () => {},
+      d: error => error.reason,
+      setTimeout: callback => callback(),
+      Promise,
+      Error,
+    };
+    vm.runInNewContext(`${patched};globalThis.bootstrap=gn;`, context);
+    const restored = await context.bootstrap({ emitLoginSuccess: false });
+    return { restored, attempts: attempts.length };
+  }
+
+  assert.deepEqual(await run(['network_error', 'network_error']), { restored: true, attempts: 3 });
+  assert.deepEqual(await run(['timeout', 'network_error']), { restored: true, attempts: 3 });
+  assert.deepEqual(await run(['invalid_data']), { restored: false, attempts: 1 });
+  assert.deepEqual(await run(['network_error', 'network_error', 'network_error']), { restored: false, attempts: 3 });
 });
 
 test('About identifies the Linux port and relabels the original Windows requirements', () => {
