@@ -112,9 +112,14 @@ pub fn run() {
         .invoke_handler(handle)
         .setup(|app| {
             let handle = app.handle().clone();
-            app.manage(storage::CounterStore::new(
-                app.path().app_data_dir()?.join("counters.json"),
-            ));
+            let data_dir = app.path().app_data_dir()?;
+            // The login token lives in WebKit's localstorage beneath this
+            // directory. Tighten it before WebKit or the counters create files,
+            // but do not block startup if an unusual filesystem forbids chmod.
+            if let Err(error) = storage::ensure_private_directory(&data_dir) {
+                eprintln!("Could not secure app data directory: {error}");
+            }
+            app.manage(storage::CounterStore::new(data_dir.join("counters.json")));
             menu::setup(&handle)?;
             shortcuts::setup(&handle)?;
             app.manage(system::start_network_monitor(handle.clone())?);

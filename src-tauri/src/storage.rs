@@ -217,6 +217,10 @@ fn validate_count(count: u64) -> Result<(), String> {
     }
 }
 
+pub(crate) fn ensure_private_directory(path: &Path) -> io::Result<()> {
+    create_private_directory(path)
+}
+
 fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -225,7 +229,16 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(path)
+    builder.create(path)?;
+    // `create` does not change the mode of an existing directory. Tauri/WebKit
+    // may have created the app data directory with the login umask, so tighten
+    // it explicitly for the token and counter files stored beneath it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -433,6 +446,10 @@ mod tests {
             assert_eq!(
                 fs::metadata(&store.path).unwrap().permissions().mode() & 0o777,
                 0o600
+            );
+            assert_eq!(
+                fs::metadata(&directory.0).unwrap().permissions().mode() & 0o777,
+                0o700
             );
         }
     }
