@@ -98,6 +98,19 @@ fn ignores_input(hit: &HitState) -> bool {
     hit.force_ignore || hit.monitor_ignore
 }
 
+fn apply_hit_update(hit: &mut HitState, update: HitUpdate) -> (usize, usize) {
+    hit.regions = update.regions;
+    if update.update_native_input {
+        hit.input_regions = update.input_regions;
+    }
+    hit.window_passthrough = update.window_passthrough;
+    // The first region sync after startup, or after a drag restored
+    // passthrough, re-enables the interactive shape. Monitor switching has its
+    // own latch, so this must not be confused with it.
+    hit.force_ignore = false;
+    (hit.regions.len(), hit.input_regions.len())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HitUpdate {
@@ -729,16 +742,7 @@ pub fn dispatch(
                 return Err("Invalid hit region geometry".into());
             }
             let mut hit = state.hit.write().map_err(err)?;
-            hit.regions = update.regions;
-            if update.update_native_input {
-                hit.input_regions = update.input_regions;
-            }
-            hit.window_passthrough = update.window_passthrough;
-            // The first region sync after startup, or after a drag restored
-            // passthrough, re-enables the interactive shape. Monitor switching
-            // has its own latch, so this must not be confused with it.
-            hit.force_ignore = false;
-            let counts = (hit.regions.len(), hit.input_regions.len());
+            let counts = apply_hit_update(&mut hit, update);
             let changed = state
                 .hit_last
                 .lock()
@@ -1036,5 +1040,26 @@ mod tests {
 
         hit.monitor_ignore = false;
         assert!(!ignores_input(&hit));
+    }
+
+    #[test]
+    fn region_sync_releases_temporary_passthrough_but_not_the_monitor_latch() {
+        let mut hit = HitState {
+            force_ignore: true,
+            monitor_ignore: true,
+            ..HitState::default()
+        };
+        let counts = apply_hit_update(
+            &mut hit,
+            HitUpdate {
+                regions: Vec::new(),
+                input_regions: Vec::new(),
+                update_native_input: false,
+                window_passthrough: false,
+            },
+        );
+        assert_eq!(counts, (0, 0));
+        assert!(!hit.force_ignore);
+        assert!(hit.monitor_ignore);
     }
 }
