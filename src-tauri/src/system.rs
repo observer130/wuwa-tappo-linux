@@ -48,7 +48,7 @@ fn redact(message: &str) -> String {
     let lower = message.to_ascii_lowercase();
     let bytes = message.as_bytes();
     let mut ranges = Vec::new();
-    for scheme in ["https://", "http://", "wuwa-buddy://"] {
+    for scheme in ["https://", "http://", "wss://", "ws://", "wuwa-buddy://"] {
         let mut from = 0;
         while let Some(offset) = lower[from..].find(scheme) {
             let start = from + offset;
@@ -67,10 +67,16 @@ fn redact(message: &str) -> String {
     }
     for key in [
         "access_token",
+        "accesstoken",
         "refresh_token",
+        "refreshtoken",
         "kuro_infotoken",
+        "infotoken",
         "authorization",
+        "cookie",
+        "set-cookie",
         "password",
+        "passwd",
         "token",
     ] {
         let mut from = 0;
@@ -326,4 +332,35 @@ pub fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Result<V
         _ => return None,
     };
     Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redaction_covers_camel_case_credentials_and_websocket_queries() {
+        let safe = redact(
+            "accessToken=abc-123 refreshToken: def-456 Cookie: kuro_infoToken=ghi-789 \
+             wss://host/socket.io/?token=jkl-012&roomNo=42",
+        );
+        for secret in ["abc-123", "def-456", "ghi-789", "jkl-012"] {
+            assert!(!safe.contains(secret), "{secret} leaked: {safe}");
+        }
+        assert!(safe.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redaction_keeps_url_paths_and_benign_words() {
+        let safe = redact("GET https://example.com/path?secret=1 tokenization is fine");
+        assert!(safe.contains("https://example.com/path"));
+        assert!(safe.contains("[REDACTED]"));
+        assert!(!safe.contains("secret=1"));
+        assert!(safe.contains("tokenization is fine"));
+    }
+
+    #[test]
+    fn redaction_escapes_line_breaks() {
+        assert_eq!(redact("a\nb"), "a\\nb");
+    }
 }
