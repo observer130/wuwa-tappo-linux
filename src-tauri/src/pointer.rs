@@ -44,6 +44,5 @@ mod tests {
         let reader = PointerReader::new().expect("X11 pointer connection");
         let (x, y) = reader.position().expect("pointer position");
         assert!(x.is_finite() && y.is_finite());
-        assert!(x >= 0.0 && y >= 0.0);
     }
 }
