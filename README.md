@@ -51,7 +51,7 @@ cd wuwa-tappo-linux-1.0.3-1-x86_64
 
 之后也可以在应用菜单搜索 **Wuwa Tappo CN Linux**。
 
-> **推荐通过 `run.sh` 启动。** 它会应用 `input` 组、单实例锁，并设置 `GDK_BACKEND=x11` 与 `WEBKIT_FORCE_COMPOSITING_MODE=1`。二进制本身也会在未显式指定时补齐这两个变量，但 `run.sh` 仍是经过验证的启动方式。
+> **推荐通过 `run.sh` 启动。** 它会应用 `input` 组、启动器互斥锁，并设置 `GDK_BACKEND=x11` 与 `WEBKIT_FORCE_COMPOSITING_MODE=1`。二进制本身也会在未显式指定时补齐这两个变量，并持有进程级实例锁，因此直接运行二进制也不会出现双实例；但 `run.sh` 仍是经过验证的启动方式。
 
 ### 从源码构建
 

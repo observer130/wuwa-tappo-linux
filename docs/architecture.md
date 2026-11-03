@@ -28,11 +28,12 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 ## 启动流程
 
 0. `main.rs` 在 GTK/WebKit 初始化前补齐 `GDK_BACKEND=x11` 与 `WEBKIT_FORCE_COMPOSITING_MODE=1`（已有值时尊重用户设置）。
-1. `lib.rs::run` 注册插件、`WindowState`、`InputMonitor`、`SocketState`，安装 IPC 处理器。
-2. `setup` 创建 `CounterStore`，初始化菜单占位与网络监视器。
-3. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
-4. 启动输入监听线程；若当前用户不在 `input` 组，`get_input_status` 会返回失败，前端显示提示。
-5. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外由 XWayland/KWin 直接穿透，不再轮询光标，避免 Wayland 下 X11 指针坐标冻结的问题。
+1. `lib.rs::run` 先获取进程级实例锁：`XDG_RUNTIME_DIR/wuwa-tappo-linux.instance.lock`（无 `XDG_RUNTIME_DIR` 时回退到 `/tmp/wuwa-tappo-linux-<uid>.instance.lock`）。锁由内核在进程退出时释放，锁 fd 设为 `FD_CLOEXEC`，不会被 WebKit 子进程继承。拿不到锁时直接退出，避免直接运行二进制或绕过 `run.sh` 时出现双实例。更新重启时在 `RunEvent::Exit` 中先释放锁，Tauri 再启动替换进程。
+2. `lib.rs::run` 注册插件、`WindowState`、`InputMonitor`、`SocketState`，安装 IPC 处理器。
+3. `setup` 创建 `CounterStore`，初始化菜单占位与网络监视器。
+4. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
+5. 启动输入监听线程；若当前用户不在 `input` 组，`get_input_status` 会返回失败，前端显示提示。
+6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外由 XWayland/KWin 直接穿透，不再轮询光标，避免 Wayland 下 X11 指针坐标冻结的问题。
 
 `main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口没有托盘入口，因此用户关闭主窗口时直接退出应用，避免留下无法唤出的后台进程和单实例锁。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
 
@@ -115,7 +116,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
   └─ scripts/extract-assets.mjs   解析 PE + Brotli 资源表，静态提取，不执行安装包
        └─ frontend/               原始官方前端（不入库）
             └─ scripts/prepare-frontend.mjs
-                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 宝箱计时 / 关于页 / 语言 / 登录态存储
+                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 宝箱计时 / 关于页 / 语言 / 登录态存储 / 登录恢复重试
                  └─ build/frontend/        嵌入二进制的最终前端（不入库）
 ```
 
@@ -131,7 +132,9 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 官方前端把登录 token 保存为 `kuro_infoToken` Cookie（`document.cookie`）。WebKitGTK 目前不会向 `tauri://localhost` 自定义协议来源暴露 JavaScript 写入的 Cookie，表现为登录接口成功但后续 `user/me` 返回 10002，重启后也无法恢复登录。
 
-`patchCookieStorage` 在读取时先尝试 `document.cookie`，失败或无值时回退到同源 LocalStorage；写入时同时尝试 Cookie 与 LocalStorage（带过期时间），删除时两边一起清除。LocalStorage 由 WebKitGTK 持久化在应用数据目录，因此主窗口、登录窗口和重启后的实例共享同一登录态。token 为明文存储，依赖应用数据目录的本地权限，不使用系统密钥环。
+`patchCookieStorage` 在读取时先尝试 `document.cookie`，失败或无值时回退到同源 LocalStorage；写入时同时尝试 Cookie 与 LocalStorage（带过期时间），删除时两边一起清除。LocalStorage 由 WebKitGTK 持久化在应用数据目录，因此主窗口、登录窗口和重启后的实例共享同一登录态。应用数据目录在启动时会被收紧到 0700（无法 chmod 时只记录警告），token 为明文存储，依赖该目录的本地权限，不使用系统密钥环。
+
+`patchSessionRestore` 为启动恢复加了传输层重试：冷启动时网络尚未就绪导致的 `network_error` / `timeout` 最多尝试 3 次（重试间隔 1s、2s），避免把仍然有效的 token 误判为未登录；`10002/10003` 等鉴权拒绝仍然立即清除登录态。服务端因“账号已在其他设备登录”（90002）或旧 token 失效返回 10003 时，仍会按官方逻辑登出，这一层无法由客户端绕过。
 
 ## 安全边界
 

@@ -73,7 +73,7 @@ id -nG "$USER"            # 应包含 input
 ## 提示“无法读取键鼠监听状态”/“监听尚未启动”
 
 - 确认 `webkit2gtk-4.1` 运行库存在：`ldd bin/wuwatappo-linux | grep webkit`。
-- 确认没有其他实例占用锁：`run.sh` 使用 `$XDG_RUNTIME_DIR/wuwa-tappo-linux.lock`。
+- 确认没有其他实例占用锁：`run.sh` 使用 `$XDG_RUNTIME_DIR/wuwa-tappo-linux.lock`，二进制自身使用同目录下的 `wuwa-tappo-linux.instance.lock`；没有 `XDG_RUNTIME_DIR` 时文件名会带上当前 uid（`/tmp/wuwa-tappo-linux-<uid>*.lock`）。
 - 查看日志中 `[INPUT]` 行的 `granted` / `running` / `error`。
 
 ## 分数缩放下列表/按钮点不中或窗口偏移
@@ -121,6 +121,8 @@ grep '\[MOUSE\]' ~/.local/share/dev.w33d.wuwatappo.cn.linux/logs/app.log | tail 
 
 - 未登录时部分面板会保持加载态，先完成国服账号登录。
 - 如果登录窗口提示成功、主界面却仍显示未登录，或重启后登录态丢失，请确认使用包含 `patchCookieStorage` 修复的最新构建。WebKitGTK 不向 `tauri://` 来源暴露 JavaScript Cookie，旧构建会把 `infoToken` 丢掉；日志通常表现为登录后 `api/frontend/user/me` 返回 `10002`。
+- 冷启动时 `user/me` 的 `network_error` 现在最多尝试 3 次（重试间隔 1s、2s），不会再因网络尚未就绪直接显示未登录。如果日志仍出现 `[AUTH] event=boot logged_in=false`，先看同一时段是否有 `code=10003`：这表示服务端已判定 token 失效（常见于在其他设备登录后旧 token 被顶掉），需要重新登录，客户端无法恢复。
+- 当前账号服务是单会话策略：同一账号在新设备登录会生成新 token，旧 token 在下一次请求时返回 `10003`。多设备同时在线不是 Linux 移植层的设置，客户端无法绕过。
 - 登录态保存在应用数据目录的 `localstorage/` 中，可用“彻底重置”重新登录；不要把该目录或 token 发给他人。
 - 检查系统时间是否准确，TLS 与签名校验对时间敏感。
 - 官方维护期间会显示维护提示；此时“退出”会关闭整个应用。
@@ -148,11 +150,16 @@ pkill -x wuwatappo-linux
 
 ```bash
 pgrep -ax wuwatappo-linux
-fuser -v "${XDG_RUNTIME_DIR:-/tmp}/wuwa-tappo-linux.lock"
-rm -f "${XDG_RUNTIME_DIR:-/tmp}/wuwa-tappo-linux.lock"
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp}"
+SUFFIX=""
+[[ -n "${XDG_RUNTIME_DIR:-}" ]] || SUFFIX="-$(id -u)"
+fuser -v "$RUNTIME/wuwa-tappo-linux$SUFFIX.lock"
+fuser -v "$RUNTIME/wuwa-tappo-linux$SUFFIX.instance.lock"
+rm -f "$RUNTIME/wuwa-tappo-linux$SUFFIX.lock" \
+      "$RUNTIME/wuwa-tappo-linux$SUFFIX.instance.lock"
 ```
 
-不要在实例仍在运行时删除锁文件，否则可能启动第二个实例。当前启动器由 `run.sh` 持有锁，应用的 WebKit 子进程不会继承锁 fd；正常退出或异常退出后锁都会释放。
+不要在实例仍在运行时删除锁文件，否则可能启动第二个实例。`run.sh` 持有启动器锁；二进制自身还会持有进程级实例锁，因此直接运行 `bin/wuwatappo-linux` 也会被拦截。两把锁都由内核在进程退出时释放，锁 fd 不会继承给 WebKit 子进程。
 
 ## 预编译包报 `GLIBC_2.39 not found`
 
