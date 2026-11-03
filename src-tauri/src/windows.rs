@@ -734,8 +734,10 @@ pub fn dispatch(
                 hit.input_regions = update.input_regions;
             }
             hit.window_passthrough = update.window_passthrough;
-            // A region sync must not clear the explicit cursor-ignore or
-            // monitor-switch latch; only their own commands do that.
+            // The first region sync after startup, or after a drag restored
+            // passthrough, re-enables the interactive shape. Monitor switching
+            // has its own latch, so this must not be confused with it.
+            hit.force_ignore = false;
             let counts = (hit.regions.len(), hit.input_regions.len());
             let changed = state
                 .hit_last
