@@ -43,6 +43,7 @@ type AuxiliaryHitTest = Arc<dyn Fn(f64, f64) -> bool + Send + Sync>;
 
 struct MonitorState {
     running: AtomicBool,
+    granted: AtomicBool,
     stop: AtomicBool,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
@@ -58,6 +59,7 @@ impl MonitorState {
 
     fn status(&self) -> InputStatus {
         let running = self.running.load(Ordering::Acquire);
+        let granted = self.granted.load(Ordering::Acquire);
         let error = if running {
             None
         } else {
@@ -68,7 +70,7 @@ impl MonitorState {
                 .or_else(|| Some("input_monitor_not_running".into()))
         };
         InputStatus {
-            granted: running,
+            granted,
             running,
             error,
         }
@@ -91,6 +93,7 @@ impl InputMonitor {
         Self {
             state: Arc::new(MonitorState {
                 running: AtomicBool::new(false),
+                granted: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
@@ -160,11 +163,15 @@ impl InputMonitor {
             .recv()
             .map_err(|_| "input_worker_initialization_failed")?;
         if let Err(error) = ready {
+            if error == "input_permission_required" {
+                self.state.granted.store(false, Ordering::Release);
+            }
             self.state.error(error.clone());
             self.state.running.store(false, Ordering::Release);
             let _ = self.emit_status(&app);
             return Err(error);
         }
+        self.state.granted.store(true, Ordering::Release);
         self.state.running.store(true, Ordering::Release);
         let status = self.emit_status(&app)?;
         Ok(status)
@@ -701,5 +708,26 @@ mod tests {
         assert_eq!(hat_axis(ABS_HAT0X), Some(0));
         assert_eq!(hat_axis(ABS_HAT0Y), Some(1));
         assert_eq!(hat_axis(0x00), None);
+    }
+
+    #[test]
+    fn granted_reports_permission_separately_from_the_worker_state() {
+        let state = MonitorState {
+            running: AtomicBool::new(false),
+            granted: AtomicBool::new(true),
+            stop: AtomicBool::new(false),
+            error: Mutex::new(Some("input_monitor_not_running".into())),
+            member_resolver: Mutex::new(None),
+            auxiliary_hit_test: Mutex::new(None),
+        };
+        let status = state.status();
+        assert!(status.granted);
+        assert!(!status.running);
+        assert_eq!(status.error.as_deref(), Some("input_monitor_not_running"));
+
+        state.granted.store(false, Ordering::Release);
+        let status = state.status();
+        assert!(!status.granted);
+        assert!(!status.running);
     }
 }
