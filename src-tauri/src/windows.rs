@@ -9,8 +9,8 @@ use std::{
     },
 };
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 use x11rb::protocol::xproto::Rectangle;
 
@@ -90,7 +90,12 @@ struct HitState {
     input_regions: Vec<HitRegion>,
     window_passthrough: bool,
     force_ignore: bool,
+    monitor_ignore: bool,
     swallow: bool,
+}
+
+fn ignores_input(hit: &HitState) -> bool {
+    hit.force_ignore || hit.monitor_ignore
 }
 
 #[derive(Deserialize)]
@@ -206,7 +211,7 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
                     height: size.height.min(u16::MAX as u32) as u16,
                 }],
             )
-        } else if hit.force_ignore {
+        } else if ignores_input(&hit) {
             (0, Vec::new())
         } else {
             let regions = if hit.window_passthrough {
@@ -698,7 +703,8 @@ pub fn dispatch(
                 hit.input_regions = update.input_regions;
             }
             hit.window_passthrough = update.window_passthrough;
-            hit.force_ignore = false;
+            // A region sync must not clear the explicit cursor-ignore or
+            // monitor-switch latch; only their own commands do that.
             let counts = (hit.regions.len(), hit.input_regions.len());
             let changed = state
                 .hit_last
@@ -757,10 +763,11 @@ pub fn dispatch(
                 return Err("Monitor dimensions must be positive".into());
             }
             let w = main_window(app)?;
-            state.hit.write().map_err(err)?.force_ignore = true;
-            apply_main_input_shape(app)?;
-            let target = w
-                .available_monitors()
+            // Validate the target before touching the input shape. If this
+            // command fails, the frontend does not send the matching
+            // `finish_main_window_monitor_switch`, so leaving the shape empty
+            // here would make the overlay permanently click-through.
+            w.available_monitors()
                 .map_err(err)?
                 .into_iter()
                 .find(|m| {
@@ -770,14 +777,34 @@ pub fn dispatch(
                         && m.size().height == height as u32
                 })
                 .ok_or("Selected display is no longer available")?;
-            let scale = target.scale_factor();
-            w.set_position(LogicalPosition::new(x / scale, y / scale))
+            state.hit.write().map_err(err)?.monitor_ignore = true;
+            if let Err(error) = apply_main_input_shape(app) {
+                state.hit.write().map_err(err)?.monitor_ignore = false;
+                let _ = apply_main_input_shape(app);
+                return Err(error);
+            }
+            let result = (|| -> Result<(), String> {
+                // The payload comes from Tauri's monitor.position/size, so it
+                // is already physical. Using LogicalPosition here would apply
+                // the source monitor's scale and land on the wrong pixels when
+                // the two monitors use different DPI.
+                w.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+                    .map_err(err)?;
+                w.set_size(PhysicalSize::new(
+                    width.round() as u32,
+                    height.round() as u32,
+                ))
                 .map_err(err)?;
-            w.set_size(LogicalSize::new(width / scale, height / scale))
-                .map_err(err)?;
+                Ok(())
+            })();
+            if let Err(error) = result {
+                state.hit.write().map_err(err)?.monitor_ignore = false;
+                let _ = apply_main_input_shape(app);
+                return Err(error);
+            }
         }
         "finish_main_window_monitor_switch" => {
-            state.hit.write().map_err(err)?.force_ignore = false;
+            state.hit.write().map_err(err)?.monitor_ignore = false;
             apply_main_input_shape(app)?;
         }
         "set_main_window_content_bounds" => {
@@ -954,4 +981,27 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                 .is_ok_and(|regions| regions.values().any(|region| region.contains(x, y)))
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_switch_ignore_is_independent_from_explicit_cursor_ignore() {
+        let mut hit = HitState::default();
+        assert!(!ignores_input(&hit));
+
+        hit.force_ignore = true;
+        assert!(ignores_input(&hit));
+
+        hit.monitor_ignore = true;
+        assert!(ignores_input(&hit));
+
+        hit.force_ignore = false;
+        assert!(ignores_input(&hit));
+
+        hit.monitor_ignore = false;
+        assert!(!ignores_input(&hit));
+    }
 }
