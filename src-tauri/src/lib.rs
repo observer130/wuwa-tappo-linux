@@ -4,6 +4,7 @@ mod menu;
 mod pointer;
 mod shape;
 mod shortcuts;
+mod single_instance;
 mod socket;
 mod storage;
 mod system;
@@ -83,6 +84,24 @@ fn handle(invoke: Invoke) -> bool {
 }
 
 pub fn run() {
+    // This lock covers direct binary launches and desktop entries that bypass
+    // run.sh. Keep the guard alive until the event loop exits.
+    let instance_lock =
+        std::sync::Arc::new(std::sync::Mutex::new(match single_instance::acquire() {
+            Ok(Some(lock)) => Some(lock),
+            Ok(None) => {
+                eprintln!("Wuwa Tappo is already running.");
+                return;
+            }
+            Err(error) => {
+                eprintln!("Could not enforce a single instance: {error}");
+                return;
+            }
+        }));
+    // Tauri's update restart spawns the replacement process just before this
+    // one exits. Release the lock first so the new process can acquire it.
+    let exit_lock = instance_lock.clone();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -113,7 +132,7 @@ pub fn run() {
             return;
         }
     };
-    app.run(|app, event| {
+    app.run(move |app, event| {
         if let tauri::RunEvent::Exit = event {
             socket::shutdown(app);
             if let Some(monitor) = app.try_state::<system::SystemMonitor>() {
@@ -123,6 +142,9 @@ pub fn run() {
             }
             if let Err(error) = app.state::<input::InputMonitor>().stop() {
                 eprintln!("Input shutdown failed: {error}");
+            }
+            if let Ok(mut guard) = exit_lock.lock() {
+                guard.take();
             }
         }
     });

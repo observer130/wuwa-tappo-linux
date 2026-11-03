@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Launch Wuwa Tappo. The binary sets the transparent-overlay environment
-# defaults itself; this script adds the input group, single-instance lock and
-# X11 backend preference used by the tested configuration.
+# defaults itself; this script adds the input group, the launcher-level
+# single-instance lock and X11 backend preference used by the tested
+# configuration. The binary also holds its own instance lock, so direct
+# launches and other desktop entries cannot start a second copy.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
