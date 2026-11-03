@@ -313,6 +313,10 @@ fn build_window(
     .transparent(true)
     .decorations(false)
     .shadow(false)
+    // Only the main pet follows the official "show taskbar icon" setting.
+    // Panel/login/about/update/toast are auxiliary tool windows and must not
+    // add separate taskbar entries.
+    .skip_taskbar(label != "main")
     .resizable(label == "panel")
     .maximizable(false)
     .visible(false)
