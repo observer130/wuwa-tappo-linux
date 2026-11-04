@@ -12,7 +12,9 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
-use x11rb::protocol::xproto::Rectangle;
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, Rectangle};
+use x11rb::rust_connection::RustConnection;
 
 pub const COMMANDS: &[&str] = &[
     "apply_main_window_position",
@@ -515,16 +517,162 @@ fn safe_area(app: &AppHandle) -> Result<Value, String> {
         ),
         webview_scale(app),
     );
-    Ok(
-        json!({"insets": insets, "autoHideEdge": null, "foregroundFullscreen": foreground_fullscreen(app)?}),
-    )
+    let (foreground, application_fullscreen, auto_hide_edge) = desktop_state(&m, &insets);
+    Ok(json!({
+        "insets": insets,
+        "autoHideEdge": auto_hide_edge,
+        "foregroundFullscreen": foreground,
+        "foregroundApplicationFullscreen": application_fullscreen,
+    }))
 }
 
-// The Linux rebuild never inspects other applications' windows. The official
-// frontend only needs a boolean here, so report that no foreground fullscreen
-// application was detected.
-fn foreground_fullscreen(_app: &AppHandle) -> Result<bool, String> {
-    Ok(false)
+fn x11_property_u32(connection: &RustConnection, window: u32, property: u32) -> Vec<u32> {
+    connection
+        .get_property(false, window, property, AtomEnum::ANY, 0, 64)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .and_then(|reply| reply.value32().map(|values| values.collect()))
+        .unwrap_or_default()
+}
+
+fn x11_intern(connection: &RustConnection, name: &str) -> Option<u32> {
+    connection
+        .intern_atom(false, name.as_bytes())
+        .ok()?
+        .reply()
+        .ok()
+        .map(|reply| reply.atom)
+}
+
+/// Foreground fullscreen and auto-hide taskbar state from EWMH properties.
+///
+/// X11 exposes `_NET_ACTIVE_WINDOW` / `_NET_WM_STATE_FULLSCREEN`; panels that
+/// hide themselves keep a dock window at the monitor edge without reserving
+/// work area, which is the same signal the official backend uses to decide
+/// whether the pet has to avoid a hidden taskbar.
+fn desktop_state(
+    monitor: &tauri::Monitor,
+    insets: &crate::geometry::Insets,
+) -> (bool, bool, Option<&'static str>) {
+    let Ok((connection, screen)) = x11rb::connect(None) else {
+        return (false, false, None);
+    };
+    let Some(root) = connection
+        .setup()
+        .roots
+        .get(screen)
+        .map(|screen| screen.root)
+    else {
+        return (false, false, None);
+    };
+    let Some(active_atom) = x11_intern(&connection, "_NET_ACTIVE_WINDOW") else {
+        return (false, false, None);
+    };
+    let Some(state_atom) = x11_intern(&connection, "_NET_WM_STATE") else {
+        return (false, false, None);
+    };
+    let Some(fullscreen_atom) = x11_intern(&connection, "_NET_WM_STATE_FULLSCREEN") else {
+        return (false, false, None);
+    };
+    let Some(pid_atom) = x11_intern(&connection, "_NET_WM_PID") else {
+        return (false, false, None);
+    };
+    let active = x11_property_u32(&connection, root, active_atom)
+        .first()
+        .copied()
+        .unwrap_or(0);
+    let own_pid = std::process::id();
+    let active_pid = x11_property_u32(&connection, active, pid_atom)
+        .first()
+        .copied();
+    let foreground = active != 0
+        && active_pid != Some(own_pid)
+        && x11_property_u32(&connection, active, state_atom).contains(&fullscreen_atom);
+    let application_fullscreen = foreground;
+
+    let Some(client_list_atom) = x11_intern(&connection, "_NET_CLIENT_LIST") else {
+        return (foreground, application_fullscreen, None);
+    };
+    let Some(window_type_atom) = x11_intern(&connection, "_NET_WM_WINDOW_TYPE") else {
+        return (foreground, application_fullscreen, None);
+    };
+    let Some(dock_atom) = x11_intern(&connection, "_NET_WM_WINDOW_TYPE_DOCK") else {
+        return (foreground, application_fullscreen, None);
+    };
+    let monitor_bounds = (
+        monitor.position().x,
+        monitor.position().y,
+        monitor.size().width,
+        monitor.size().height,
+    );
+    let auto_hide_edge = x11_property_u32(&connection, root, client_list_atom)
+        .into_iter()
+        .filter(|window| *window != 0)
+        .filter(|window| {
+            x11_property_u32(&connection, *window, pid_atom)
+                .first()
+                .copied()
+                != Some(own_pid)
+        })
+        .filter(|window| {
+            x11_property_u32(&connection, *window, window_type_atom).contains(&dock_atom)
+        })
+        .find_map(|window| {
+            let geometry = connection.get_geometry(window).ok()?.reply().ok()?;
+            dock_edge(
+                (
+                    geometry.x as i32,
+                    geometry.y as i32,
+                    u32::from(geometry.width),
+                    u32::from(geometry.height),
+                ),
+                monitor_bounds,
+                insets,
+            )
+        });
+    (foreground, application_fullscreen, auto_hide_edge)
+}
+
+fn dock_edge(
+    window: (i32, i32, u32, u32),
+    monitor: (i32, i32, u32, u32),
+    insets: &crate::geometry::Insets,
+) -> Option<&'static str> {
+    let (left, top, width, height) = window;
+    let (monitor_left, monitor_top, monitor_width, monitor_height) = monitor;
+    let right = left + width as i32;
+    let bottom = top + height as i32;
+    let monitor_right = monitor_left + monitor_width as i32;
+    let monitor_bottom = monitor_top + monitor_height as i32;
+    let intersects = left < monitor_right
+        && right > monitor_left
+        && top < monitor_bottom
+        && bottom > monitor_top;
+    if !intersects {
+        return None;
+    }
+    if top <= monitor_top + 2 && height <= 160 && width >= monitor_width / 3 && insets.top < 1.0 {
+        return Some("top");
+    }
+    if bottom >= monitor_bottom - 2
+        && height <= 160
+        && width >= monitor_width / 3
+        && insets.bottom < 1.0
+    {
+        return Some("bottom");
+    }
+    if left <= monitor_left + 2 && width <= 160 && height >= monitor_height / 3 && insets.left < 1.0
+    {
+        return Some("left");
+    }
+    if right >= monitor_right - 2
+        && width <= 160
+        && height >= monitor_height / 3
+        && insets.right < 1.0
+    {
+        return Some("right");
+    }
+    None
 }
 
 fn payload(args: &Value) -> &Value {
@@ -1047,6 +1195,36 @@ mod tests {
 
         hit.monitor_ignore = false;
         assert!(!ignores_input(&hit));
+    }
+
+    #[test]
+    fn dock_edges_are_only_reported_when_the_taskbar_does_not_reserve_space() {
+        use crate::geometry::Insets;
+        let monitor = (0, 0, 1920, 1080);
+        let no_insets = Insets::default();
+        assert_eq!(
+            dock_edge((0, 0, 1920, 32), monitor, &no_insets),
+            Some("top")
+        );
+        assert_eq!(
+            dock_edge((0, 1048, 1920, 32), monitor, &no_insets),
+            Some("bottom")
+        );
+        assert_eq!(
+            dock_edge((0, 0, 32, 1080), monitor, &no_insets),
+            Some("left")
+        );
+        assert_eq!(
+            dock_edge((1888, 0, 32, 1080), monitor, &no_insets),
+            Some("right")
+        );
+        assert_eq!(dock_edge((600, 500, 300, 200), monitor, &no_insets), None);
+        assert_eq!(dock_edge((3000, 3000, 20, 20), monitor, &no_insets), None);
+        let top_reserved = Insets {
+            top: 32.0,
+            ..Insets::default()
+        };
+        assert_eq!(dock_edge((0, 0, 1920, 32), monitor, &top_reserved), None);
     }
 
     #[test]
