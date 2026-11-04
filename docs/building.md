@@ -9,21 +9,22 @@
 | 7-Zip | 仅构建期解包官方安装包，推荐 `7zz` 或 `7z` |
 | WebKitGTK | 4.1（开发包） |
 | GTK | 3.x 开发包 |
+| xkbcommon | 开发包（键盘布局映射） |
 
 发行版安装示例：
 
 ```bash
 # Arch Linux
 sudo pacman -S --needed base-devel rust nodejs npm 7zip \
-  webkit2gtk-4.1 gtk3 libappindicator-gtk3
+  webkit2gtk-4.1 gtk3 libxkbcommon libappindicator-gtk3
 
 # Ubuntu 24.04 / Debian 13
 sudo apt install build-essential pkg-config libssl-dev nodejs npm 7zip \
-  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+  libwebkit2gtk-4.1-dev libgtk-3-dev libxkbcommon-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
 # Fedora
 sudo dnf install gcc gcc-c++ make pkgconf-pkg-config openssl-devel nodejs npm 7zip \
-  webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+  webkit2gtk4.1-devel gtk3-devel libxkbcommon-devel libappindicator-gtk3-devel librsvg2-devel
 ```
 
 ## 获取官方前端

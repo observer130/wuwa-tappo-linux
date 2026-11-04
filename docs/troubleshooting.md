@@ -140,7 +140,7 @@ wss://api-mc-wuwatappo.kurogames-global.com/socket.io/
 
 ## 启动时提示已在运行
 
-主窗口或任务栏的关闭操作现在会直接退出应用（当前没有托盘图标）。如果你用 `F9` 隐藏了桌宠，进程会继续运行，再按一次 `F9` 即可恢复；也可以手动退出：
+如果系统托盘可用，主窗口或任务栏的关闭操作会隐藏到托盘，退出请使用托盘菜单的“退出”。如果托盘不可用，关闭窗口会直接退出应用。如果你用 `F9` 隐藏了桌宠，进程会继续运行，再按一次 `F9` 即可恢复；窗口被隐藏到托盘时，`F9` 也会恢复窗口。也可以手动退出：
 
 ```bash
 pkill -x wuwatappo-linux
@@ -160,6 +160,16 @@ rm -f "$RUNTIME/wuwa-tappo-linux$SUFFIX.lock" \
 ```
 
 不要在实例仍在运行时删除锁文件，否则可能启动第二个实例。`run.sh` 持有启动器锁；二进制自身还会持有进程级实例锁，因此直接运行 `bin/wuwatappo-linux` 也会被拦截。两把锁都由内核在进程退出时释放，锁 fd 不会继承给 WebKit 子进程。
+
+## 托盘图标不显示
+
+托盘依赖 `libayatana-appindicator3`（或 `libappindicator3`）。确认：
+
+```bash
+ldconfig -p | grep -E 'ayatana-appindicator|libappindicator3'
+```
+
+若缺失，安装 `libayatana-appindicator3-1`（Debian/Ubuntu）或 `libappindicator-gtk3`（Arch/Fedora）后重启应用。GNOME 需要 AppIndicator/KStatusNotifierItem 扩展；KDE、XFCE、Cinnamon 等通常自带支持。托盘不可用时应用会自动禁用“关闭到托盘”，关闭主窗口会直接退出。
 
 ## 预编译包报 `GLIBC_2.39 not found`
 

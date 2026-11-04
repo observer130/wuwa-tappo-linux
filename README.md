@@ -10,11 +10,12 @@
 - **官方桌宠主界面**：透明、无边框、全屏覆盖层，保留官方角色、宝箱、点击计数、设置入口与多语言文案。
 - **全局键盘、鼠标与手柄**：统计打字、点击与手柄按键；快捷键由后端全局匹配（支持自定义），并支持点击穿透和按角色区域命中。
 - **联机房间**：支持多人联机房间。
+- **系统托盘与原生菜单**：提供与官方一致的托盘菜单和桌宠右键菜单（打开背包/图鉴/合成/联机、设置、显示/隐藏、点击穿透、游戏模式、重启/退出）。
 
 ## 系统要求
 
 - **x86_64 Linux**，X11 或 XWayland。
-- **WebKitGTK 4.1**、GTK 3、`libsoup-3.0`。
+- **WebKitGTK 4.1**、GTK 3、`libsoup-3.0`、`libxkbcommon`；系统托盘需要 appindicator（见下方发行版命令）。
 - 预编译发布包在 Ubuntu 24.04 环境构建，要求 **glibc ≥ 2.39**（Ubuntu 24.04+、Fedora 40+、Arch 等）。更旧的发行版请从源码构建。
 - 读取全局键盘、鼠标和手柄需要当前用户属于 **`input` 组**。
 
@@ -22,13 +23,13 @@
 
 ```bash
 # Arch Linux
-sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3
+sudo pacman -S webkit2gtk-4.1 gtk3 libxkbcommon libappindicator-gtk3
 
 # Ubuntu 24.04 / Debian 13
-sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
+sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libxkbcommon0 libayatana-appindicator3-1
 
 # Fedora
-sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3
+sudo dnf install webkit2gtk4.1 gtk3 libxkbcommon libappindicator-gtk3
 ```
 
 ## 快速开始
@@ -79,17 +80,11 @@ npm run package
 | `F8` | 在多显示器之间切换主窗口 |
 | `F9` | 显示 / 隐藏桌宠 |
 
-当前版本没有托盘图标。关闭主窗口或任务栏关闭会直接退出应用；`F9` 隐藏桌宠后进程仍在，再按一次 `F9` 即可恢复。
+关闭主窗口或任务栏关闭时，如果系统托盘可用，窗口会隐藏到托盘；退出请使用托盘菜单的“退出”（会先保存点击计数并断开联机）。如果托盘不可用（缺少 `libayatana-appindicator3` 等），关闭窗口会直接退出应用。`F9` 隐藏桌宠后进程仍在，再按一次 `F9` 即可恢复；窗口被隐藏到托盘时，`F9` 也会把窗口重新显示出来。
 
 ## 数据与隐私
 
-- 应用数据：`~/.local/share/dev.w33d.wuwatappo.cn.linux/`
-  - `counters.json`：按键与点击计数（按账号/环境区分）。
-  - `shortcuts.json`：设置页保存的快捷键绑定。
-  - `logs/app.log`：脱敏后的运行日志，超过 2 MiB 自动滚动。
-  - WebKit 的 Cookie / LocalStorage 也位于该应用数据目录下。
 - 日志会对 URL 查询参数、token、Cookie、Authorization 等做脱敏；不会主动上传。
-- 重置全部本地状态：先退出应用，再删除上述目录。这会同时清除登录态与点击计数。
 
 ## 第三方内容与许可
 

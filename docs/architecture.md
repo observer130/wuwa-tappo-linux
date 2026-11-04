@@ -21,7 +21,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 │   ├─ socket.rs   官方 WebSocket 原生代理                     │
 │   ├─ storage.rs  点击计数持久化                              │
 │   ├─ system.rs   日志/诊断/自启动/网络状态                    │
-│   └─ menu.rs     原生菜单占位（Linux 无菜单栏）               │
+│   └─ menu.rs     系统托盘与 Dock 原生菜单                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -30,12 +30,13 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 0. `main.rs` 在 GTK/WebKit 初始化前补齐 `GDK_BACKEND=x11` 与 `WEBKIT_FORCE_COMPOSITING_MODE=1`（已有值时尊重用户设置）。
 1. `lib.rs::run` 先获取进程级实例锁：`XDG_RUNTIME_DIR/wuwa-tappo-linux.instance.lock`（无 `XDG_RUNTIME_DIR` 时回退到 `/tmp/wuwa-tappo-linux-<uid>.instance.lock`）。锁由内核在进程退出时释放，锁 fd 设为 `FD_CLOEXEC`，不会被 WebKit 子进程继承。拿不到锁时直接退出，避免直接运行二进制或绕过 `run.sh` 时出现双实例。更新重启时在 `RunEvent::Exit` 中先释放锁，Tauri 再启动替换进程。
 2. `lib.rs::run` 注册插件、`WindowState`、`InputMonitor`、`SocketState`，安装 IPC 处理器。
-3. `setup` 创建 `CounterStore`，初始化菜单占位与网络监视器。
+3. `setup` 创建 `CounterStore`，初始化系统托盘/Dock 菜单与网络监视器。托盘不可用时菜单功能降级，关闭主窗口会直接退出。
 4. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
 5. 启动输入监听线程；若当前用户不在 `input` 组，`get_input_status` 会返回失败，前端显示提示。
 6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外由 XWayland/KWin 直接穿透，不再轮询光标，避免 Wayland 下 X11 指针坐标冻结的问题。
+7. `get_main_desktop_safe_area` 通过 EWMH (`_NET_ACTIVE_WINDOW`、`_NET_WM_STATE_FULLSCREEN`、dock 窗口) 返回前台全屏状态、`foregroundApplicationFullscreen` 和 `autoHideEdge`，与官方用于自动游戏模式/任务栏避让的字段保持一致。
 
-`main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口没有托盘入口，因此用户关闭主窗口时直接退出应用，避免留下无法唤出的后台进程和单实例锁。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
+`main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口关闭时，如果托盘创建成功则隐藏到托盘；托盘菜单的“退出”会走前端 `quitApp` 的保存计数/断开 Socket 流程。托盘不可用或创建失败时关闭主窗口直接退出，避免留下无法唤出的后台进程和单实例锁。`F9` 在窗口隐藏到托盘时也会恢复窗口。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
 
 ## 命令路由
 
@@ -78,8 +79,10 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 - 每 2 秒扫描 `/dev/input/event*`，以非阻塞方式打开。
 - 处理 `EV_KEY` 与手柄方向键的 `EV_ABS`：
   - 鼠标键码 272–274 → `mouse-button`（含 `button`、`action`、可选 `memberId`）。
-  - 手柄键码 `0x120–0x12b`、`0x130–0x13f`、`0x220–0x223`、`0x2c0–0x2e7` → `gamepad-button-press`；方向键 `ABS_HAT0X/Y` 从归零状态进入按下时也只发送一次。
-  - 其他键码 < 256 → `key-press` / `key-release`，使用浏览器 `KeyboardEvent.key` 风格名称（如 `a`、`F7`、`ControlLeft`、空格为 `" "`）。
+  - 手柄键码 `0x120–0x12b`、`0x130–0x13f`、`0x220–0x223`、`0x2c0–0x2e7` 与手柄方向键 → `gamepad-button-press`；方向键按四个方向独立检测上升沿，斜向组合会各发一次。
+  - 其他键码 < 256 → `key-press` / `key-release`，使用浏览器 `KeyboardEvent.key` 风格名称（如 `a`、`F7`、`ControlLeft`、空格为 `" "`）。按键通过 libxkbcommon 按当前 XKB 布局映射到字符和 DOM `keyCode`，非 US 布局下的自定义快捷键与字母名称与浏览器一致。
+  - `EV_KEY value=2` 是自动重复，不产生 `key-release`；只有真实松手才结束按键。
+  - 模拟扳机（`ABS_Z`/`ABS_RZ`，兼容 `ABS_GAS`/`ABS_BRAKE`）超过轴范围中点时发一次 `gamepad-button-press`，松手不发 release。
 - 指针位置通过独立的 XCB 连接查询 X11 根窗口，避免 Tao/GDK 在后台线程返回启动时的缓存坐标。输入区域生效后，指针位于桌宠上时 XWayland 会持续更新该坐标。
 - 鼠标移动以 33 ms 节流轮询，光标在辅助窗口上时不发送。
 - 按键去重、鼠标按下状态与手柄按住状态由后端维护，避免重复计数。
@@ -91,7 +94,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 - `shortcuts.rs` 维护 `动作 → {key, modifiers}` 表，默认 `gameMode`=F7、`switchScreen`=F8、`togglePet`=F9，持久化到应用数据目录的 `shortcuts.json`。
 - `get_app_shortcuts` 返回当前表；`set_app_shortcuts` 校验后写盘并广播 `app-shortcuts-changed`（重复组合返回 `duplicate`）；`set_shortcut_capture` 在设置页录制期间暂停匹配。
-- 输入线程用独立的 `held_keys` 跟踪修饰键（忽略自动重复），把 evdev 键码翻译成官方前端使用的 DOM `keyCode`，命中后广播 `app-shortcut`（负载为动作名，如 `"togglePet"`）。
+- 输入线程用独立的 `held_keys` 跟踪修饰键（忽略自动重复），按当前 XKB 布局把 evdev 键码翻译成官方前端使用的 DOM `keyCode`，命中后广播 `app-shortcut`（负载为动作名，如 `"togglePet"`）。
 - 因此快捷键在窗口失焦时同样生效，但依赖 `input` 监听；监听不可用时快捷键与点击计数一起失效。
 
 ## 原生 WebSocket 代理
