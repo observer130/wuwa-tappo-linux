@@ -242,13 +242,30 @@ struct PollFd {
 const EV_KEY: u16 = 1;
 const EV_SYN: u16 = 0;
 const EV_ABS: u16 = 3;
+const ABS_Z: u16 = 0x02;
+const ABS_RZ: u16 = 0x05;
+const ABS_GAS: u16 = 0x09;
+const ABS_BRAKE: u16 = 0x0a;
 const ABS_HAT0X: u16 = 0x10;
 const ABS_HAT0Y: u16 = 0x11;
+
+#[repr(C)]
+struct InputAbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
 
 struct Device {
     _path: PathBuf,
     file: File,
     hat: [i32; 2],
+    hat_directions: [bool; 4],
+    triggers: [bool; 2],
+    trigger_ranges: [[i32; 2]; 2],
 }
 
 /// Linux exposes controller buttons as EV_KEY codes above the keyboard range.
@@ -263,6 +280,71 @@ fn hat_axis(code: u16) -> Option<usize> {
         ABS_HAT0Y => Some(1),
         _ => None,
     }
+}
+
+/// Controller triggers are exposed as buttons on some drivers and as analog
+/// axes (`ABS_Z` / `ABS_RZ`, occasionally `ABS_GAS` / `ABS_BRAKE`) on most
+/// Linux drivers. The official backend reports them as gamepad buttons.
+fn trigger_axis(code: u16) -> Option<usize> {
+    match code {
+        ABS_Z | ABS_GAS => Some(0),
+        ABS_RZ | ABS_BRAKE => Some(1),
+        _ => None,
+    }
+}
+
+/// Up, down, left, right. Keeping four independent flags matters for diagonal
+/// D-pad input: the official backend emits one press per direction transition.
+fn hat_directions(x: i32, y: i32) -> [bool; 4] {
+    [y < 0, y > 0, x < 0, x > 0]
+}
+
+fn trigger_pressed(value: i32, range: (i32, i32)) -> bool {
+    let (minimum, maximum) = range;
+    maximum > minimum && value > minimum + (maximum - minimum) / 2
+}
+
+/// Returns `Some(true)` for a press and `Some(false)` for a release.
+/// evdev value 2 is auto-repeat and must never be reported as a release.
+fn key_edge(value: i32) -> Option<bool> {
+    match value {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// `EVIOCGABS` is `_IOR('E', 0x40 + axis, struct input_absinfo)`; on x86_64
+/// the request encodes a 24-byte payload.
+fn abs_range(file: &File, code: u16) -> Option<(i32, i32)> {
+    let mut info = InputAbsInfo {
+        value: 0,
+        minimum: 0,
+        maximum: 0,
+        fuzz: 0,
+        flat: 0,
+        resolution: 0,
+    };
+    let request = 0x8018_4540_u64 + u64::from(code);
+    let result = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            request as libc::c_ulong,
+            &mut info as *mut InputAbsInfo,
+        )
+    };
+    (result == 0 && info.maximum > info.minimum).then_some((info.minimum, info.maximum))
+}
+
+fn trigger_ranges(file: &File) -> [[i32; 2]; 2] {
+    [
+        abs_range(file, ABS_Z)
+            .or_else(|| abs_range(file, ABS_GAS))
+            .map_or([0, 255], |(minimum, maximum)| [minimum, maximum]),
+        abs_range(file, ABS_RZ)
+            .or_else(|| abs_range(file, ABS_BRAKE))
+            .map_or([0, 255], |(minimum, maximum)| [minimum, maximum]),
+    ]
 }
 
 fn open_device(path: &PathBuf) -> Option<File> {
@@ -293,11 +375,15 @@ fn scan_devices(devices: &mut Vec<Device>, known: &mut BTreeSet<PathBuf>) {
             continue;
         }
         if let Some(file) = open_device(&path) {
+            let trigger_ranges = trigger_ranges(&file);
             known.insert(path.clone());
             devices.push(Device {
                 _path: path,
                 file,
                 hat: [0, 0],
+                hat_directions: [false; 4],
+                triggers: [false; 2],
+                trigger_ranges,
             });
         }
     }
@@ -479,16 +565,20 @@ fn dispatch_shortcut(
     app: &AppHandle,
     shortcuts: &crate::shortcuts::Shortcuts,
     held: &BTreeSet<u16>,
-    code: u16,
+    key: Option<u32>,
 ) {
-    if crate::shortcuts::is_modifier(code) {
-        return;
-    }
-    let Some(key) = crate::shortcuts::dom_key_code(code) else {
+    let Some(key) = key else {
         return;
     };
     let modifiers = crate::shortcuts::modifiers_from(held);
     if let Some(action) = shortcuts.action_for(key, modifiers) {
+        // If the window was hidden into the tray, F9 must be able to restore
+        // it even on desktops whose tray host does not render AppIndicator
+        // icons. Keep the pet's own visibility state untouched in that case.
+        if action == "togglePet" && crate::menu::hidden_to_tray() {
+            crate::menu::show_main(app);
+            return;
+        }
         let _ = app.emit("app-shortcut", action);
     }
 }
@@ -502,6 +592,10 @@ fn run_monitor(
     let mut devices = Vec::new();
     let mut known = BTreeSet::new();
     let pointer = crate::pointer::PointerReader::new();
+    let layout = crate::layout::KeyLayout::new();
+    if layout.is_none() {
+        eprintln!("[input] xkb keymap unavailable; using the US fallback mapping");
+    }
     scan_devices(&mut devices, &mut known);
     if devices.is_empty() {
         let error = "input_permission_required".to_owned();
@@ -572,15 +666,27 @@ fn run_monitor(
                         continue;
                     }
                     if event.type_ == EV_ABS {
-                        let Some(axis) = hat_axis(event.code) else {
-                            continue;
-                        };
-                        let device = &mut devices[index];
-                        let was_active = device.hat != [0, 0];
-                        device.hat[axis] = event.value;
-                        let active = device.hat != [0, 0];
-                        if !was_active && active {
-                            let _ = app.emit("gamepad-button-press", ());
+                        if let Some(axis) = hat_axis(event.code) {
+                            let device = &mut devices[index];
+                            device.hat[axis] = event.value;
+                            let directions = hat_directions(device.hat[0], device.hat[1]);
+                            for (direction, pressed) in directions.iter().enumerate() {
+                                if *pressed && !device.hat_directions[direction] {
+                                    let _ = app.emit("gamepad-button-press", ());
+                                }
+                            }
+                            device.hat_directions = directions;
+                        } else if let Some(trigger) = trigger_axis(event.code) {
+                            let device = &mut devices[index];
+                            let range = (
+                                device.trigger_ranges[trigger][0],
+                                device.trigger_ranges[trigger][1],
+                            );
+                            let pressed = trigger_pressed(event.value, range);
+                            if pressed && !device.triggers[trigger] {
+                                let _ = app.emit("gamepad-button-press", ());
+                            }
+                            device.triggers[trigger] = pressed;
                         }
                         continue;
                     }
@@ -634,24 +740,37 @@ fn run_monitor(
                             pressed_gamepad_buttons.remove(&event.code);
                         }
                     } else if event.code < 256 {
-                        if event.value == 1 {
+                        // evdev value 2 is auto-repeat. The official backend
+                        // only releases a key on the matching key-up event.
+                        let Some(down) = key_edge(event.value) else {
+                            continue;
+                        };
+                        if down {
                             held_keys.insert(event.code);
-                        } else if event.value == 0 {
+                        } else {
                             held_keys.remove(&event.code);
                         }
-                        let down = event.value == 1;
                         if down {
                             if !pressed_keys.insert(event.code) {
                                 continue;
                             }
-                            dispatch_shortcut(&app, &shortcuts, &held_keys, event.code);
+                            let key_code = if crate::shortcuts::is_modifier(event.code) {
+                                None
+                            } else {
+                                layout
+                                    .as_ref()
+                                    .and_then(|layout| layout.dom_key_code(event.code))
+                                    .or_else(|| crate::shortcuts::dom_key_code(event.code))
+                            };
+                            dispatch_shortcut(&app, &shortcuts, &held_keys, key_code);
                         } else if !pressed_keys.remove(&event.code) {
                             continue;
                         }
-                        let _ = app.emit(
-                            if down { "key-press" } else { "key-release" },
-                            key_label(event.code),
-                        );
+                        let label = layout
+                            .as_ref()
+                            .and_then(|layout| layout.label(event.code))
+                            .unwrap_or_else(|| key_label(event.code));
+                        let _ = app.emit(if down { "key-press" } else { "key-release" }, label);
                     }
                 }
             }
@@ -708,6 +827,35 @@ mod tests {
         assert_eq!(hat_axis(ABS_HAT0X), Some(0));
         assert_eq!(hat_axis(ABS_HAT0Y), Some(1));
         assert_eq!(hat_axis(0x00), None);
+    }
+
+    #[test]
+    fn dpad_diagonals_emit_each_direction_transition() {
+        assert_eq!(hat_directions(0, 0), [false, false, false, false]);
+        assert_eq!(hat_directions(1, 0), [false, false, false, true]);
+        assert_eq!(hat_directions(1, -1), [true, false, false, true]);
+        assert_eq!(hat_directions(-1, 1), [false, true, true, false]);
+    }
+
+    #[test]
+    fn auto_repeat_is_not_a_key_release() {
+        assert_eq!(key_edge(1), Some(true));
+        assert_eq!(key_edge(0), Some(false));
+        assert_eq!(key_edge(2), None);
+        assert_eq!(key_edge(-1), None);
+    }
+
+    #[test]
+    fn trigger_axes_cover_analog_and_alternate_names() {
+        assert_eq!(trigger_axis(ABS_Z), Some(0));
+        assert_eq!(trigger_axis(ABS_GAS), Some(0));
+        assert_eq!(trigger_axis(ABS_RZ), Some(1));
+        assert_eq!(trigger_axis(ABS_BRAKE), Some(1));
+        assert_eq!(trigger_axis(ABS_HAT0X), None);
+        assert!(!trigger_pressed(64, (0, 255)));
+        assert!(trigger_pressed(200, (0, 255)));
+        assert!(trigger_pressed(6, (0, 10)));
+        assert!(!trigger_pressed(5, (0, 10)));
     }
 
     #[test]
