@@ -385,6 +385,13 @@ fn build_window(
                 // main window must quit instead of leaving an unreachable
                 // process holding the single-instance lock.
                 if label == "main" {
+                    // With a working tray the official close behaviour is to
+                    // hide the pet and quit from the tray menu. Without a tray
+                    // this port must exit, otherwise there would be no way to
+                    // bring the window back.
+                    if crate::menu::hide_main_to_tray(&app) {
+                        return;
+                    }
                     app.state::<WindowState>()
                         .stop
                         .store(true, Ordering::Release);
