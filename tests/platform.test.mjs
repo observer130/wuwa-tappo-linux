@@ -155,6 +155,9 @@ test('native input suppression still follows trusted main-window status', async 
   view.documentEvents.get('mousedown')(input(false));
   assert.equal(prevented, 1);
   assert.equal(stopped, 1);
+  // The dock opens its native context menu from the DOM event; suppressing it
+  // while native input is active would make right-click dead.
+  assert.equal(view.documentEvents.has('contextmenu'), false);
   view.updateInput(false);
   view.documentEvents.get('mousedown')(input(true));
   assert.equal(prevented, 1);

@@ -62,7 +62,9 @@
   const state = { nativeInput: false };
   const isMainWindow = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === 'main';
   if (isMainWindow) {
-    for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu']) {
+    // `contextmenu` stays available: the official dock opens the native context
+    // menu from the DOM event, and suppressing it would make right-click dead.
+    for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick']) {
       document.addEventListener(type, event => {
         if (state.nativeInput && event.isTrusted) {
           event.preventDefault();
