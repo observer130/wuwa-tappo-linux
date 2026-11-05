@@ -76,7 +76,6 @@ pub struct WindowState {
     webview_scale: RwLock<Option<f64>>,
     shape: Mutex<Option<crate::shape::InputShape>>,
     shape_last: Mutex<Option<(u8, usize)>>,
-    stop: AtomicBool,
 }
 
 #[derive(Default)]
@@ -383,20 +382,13 @@ fn build_window(
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                // There is no tray icon to restore a hidden pet, so closing the
-                // main window must quit instead of leaving an unreachable
-                // process holding the single-instance lock.
                 if label == "main" {
-                    // With a working tray the official close behaviour is to
-                    // hide the pet and quit from the tray menu. Without a tray
-                    // this port must exit, otherwise there would be no way to
-                    // bring the window back.
+                    // The official client hides to the tray on close. Without
+                    // a usable tray, exit instead of leaving an unreachable
+                    // process holding the single-instance lock.
                     if crate::menu::hide_main_to_tray(&app) {
                         return;
                     }
-                    app.state::<WindowState>()
-                        .stop
-                        .store(true, Ordering::Release);
                     // Tearing down WebKit synchronously from a GTK window
                     // event deadlocks or aborts. Hide first, then terminate
                     // from a separate thread after the event handler returns.
@@ -1120,13 +1112,11 @@ pub fn dispatch(
             )
         }
         "exit_app" => {
-            state.stop.store(true, Ordering::Release);
             app.exit(0);
         }
         // The maintenance notice covers the whole app. Its exit button has no
         // in-app destination, so it closes the process like the original client.
         "exit_maintenance_app" => {
-            state.stop.store(true, Ordering::Release);
             app.exit(0);
         }
         _ => return Err(format!("Unsupported native command {command} from {label}")),

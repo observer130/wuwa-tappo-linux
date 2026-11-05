@@ -1,5 +1,4 @@
 use futures_util::{future::AbortHandle, future::Abortable, SinkExt, StreamExt};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -18,6 +17,7 @@ use tokio_tungstenite::{
         Message,
     },
 };
+use url::Url;
 
 const HOST: &str = "api-mc-wuwatappo.kurogames-global.com";
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
