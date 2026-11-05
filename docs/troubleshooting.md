@@ -29,7 +29,7 @@ GDK_BACKEND=x11 WEBKIT_FORCE_COMPOSITING_MODE=1 ./run.sh
 
 先按一次 `F7`。官方“游戏模式”会禁用与桌宠的交互，而且这个开关会持久化；日志中 `[SETTINGS] ... game_mode=true` 表示它正在生效。再按 `F7` 或重新打开设置关闭游戏模式即可恢复。
 
-如果 `F7` 没有反应，先确认快捷键没有被改掉（设置页可查看），再检查 `[INPUT] granted=true running=true` 与 `[HIT]` 日志。1.0.3 起快捷键由原生层从 `evdev` 匹配，输入监听未启动时不会生效。
+如果 `F7` 没有反应，先确认快捷键没有被改掉（设置页可查看），再检查 `[INPUT] granted=true running=true` 与 `[HIT]` 日志。快捷键由原生层从 `evdev` 匹配，输入监听未启动时不会生效。
 
 ## 键盘/点击计数不动
 
@@ -53,7 +53,7 @@ newgrp input
 
 ## 手柄按键不计入点击
 
-1.0.2 起官方前端会把 `gamepad-button-press` 计入点击（1.0.3 同样如此）。Linux 后端直接从 `/dev/input/event*` 读取手柄按键与方向键，同样需要 `input` 组权限；确认：
+官方前端会把 `gamepad-button-press` 计入点击。Linux 后端直接从 `/dev/input/event*` 读取手柄按键与方向键，同样需要 `input` 组权限；确认：
 
 ```bash
 ls -l /dev/input/by-id/ | grep -i -E 'joystick|gamepad'
@@ -61,14 +61,6 @@ id -nG "$USER"            # 应包含 input
 ```
 
 若手柄被 Steam Input 映射成键盘/鼠标，系统可能不再暴露原始手柄事件；关闭 Steam Input 或改用原生模式后再试。蓝牙手柄重新连接后，后端最多 2 秒内会自动重新扫描设备。
-
-## 点击宝箱后闪退
-
-1.0.2-1 在点击宝箱且积分不足 1000 时会触发 Toast；此时隐藏的 Toast 窗口尚未 realize，设置点击穿透会触发 tao 的 `Option::unwrap()` panic 并 abort。1.0.2-2 起改为先显示 Toast 再设置点击穿透，现在的 1.0.3-1 已包含该修复；如果你仍在旧构建上，请更新到最新发布版。
-
-## 宝箱一直是灰色图标
-
-如果你使用的是 1.0.2-1 之前的构建，宝箱按钮可能一直处于灰色加载态，且倒计时不出现。1.0.2-1 起的构建包含宝箱计时修复（当前 1.0.3-1 同样包含）：宝箱可领取时会显示彩色按钮，领取后才会显示下一轮倒计时。
 
 ## 提示“无法读取键鼠监听状态”/“监听尚未启动”
 
@@ -107,7 +99,7 @@ grep '\[MOUSE\]' ~/.local/share/dev.w33d.wuwatappo.cn.linux/logs/app.log | tail 
 
 ## Wayland 下无法点击、焦点异常或位置偏移
 
-当前验证路径是 **X11 / XWayland**。请：
+支持路径是 **X11 / XWayland**。请：
 
 1. 确认 `run.sh` 设置了 `GDK_BACKEND=x11`。
 2. 在 GNOME/KDE 的 Wayland 会话中允许 XWayland。
@@ -120,9 +112,9 @@ grep '\[MOUSE\]' ~/.local/share/dev.w33d.wuwatappo.cn.linux/logs/app.log | tail 
 这些功能依赖官方服务与登录态：
 
 - 未登录时部分面板会保持加载态，先完成国服账号登录。
-- 如果登录窗口提示成功、主界面却仍显示未登录，或重启后登录态丢失，请确认使用包含 `patchCookieStorage` 修复的最新构建。WebKitGTK 不向 `tauri://` 来源暴露 JavaScript Cookie，旧构建会把 `infoToken` 丢掉；日志通常表现为登录后 `api/frontend/user/me` 返回 `10002`。
-- 冷启动时 `user/me` 的 `network_error` 现在最多尝试 3 次（重试间隔 1s、2s），不会再因网络尚未就绪直接显示未登录。如果日志仍出现 `[AUTH] event=boot logged_in=false`，先看同一时段是否有 `code=10003`：这表示服务端已判定 token 失效（常见于在其他设备登录后旧 token 被顶掉），需要重新登录，客户端无法恢复。
-- 当前账号服务是单会话策略：同一账号在新设备登录会生成新 token，旧 token 在下一次请求时返回 `10003`。多设备同时在线不是 Linux 移植层的设置，客户端无法绕过。
+- 登录态依赖 `patchCookieStorage`。如果登录成功但后续请求返回 `10002`，确认构建来自当前源码且 `prepare:frontend` 成功；WebKitGTK 不向 `tauri://` 来源暴露 JavaScript Cookie，缺少该补丁会丢掉 `infoToken`。
+- 冷启动时 `user/me` 的 `network_error` 最多尝试 3 次（重试间隔 1s、2s），不会因网络尚未就绪直接显示未登录。如果日志仍出现 `[AUTH] event=boot logged_in=false`，先看同一时段是否有 `code=10003`：这表示服务端已判定 token 失效（常见于在其他设备登录后旧 token 被顶掉），需要重新登录，客户端无法恢复。
+- 账号服务是单会话策略：同一账号在新设备登录会生成新 token，旧 token 在下一次请求时返回 `10003`。多设备同时在线不是 Linux 移植层的设置，客户端无法绕过。
 - 登录态保存在应用数据目录的 `localstorage/` 中，可用“彻底重置”重新登录；不要把该目录或 token 发给他人。
 - 检查系统时间是否准确，TLS 与签名校验对时间敏感。
 - 官方维护期间会显示维护提示；此时“退出”会关闭整个应用。

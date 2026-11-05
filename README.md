@@ -1,7 +1,6 @@
 # Wuwa Tappo CN · Linux 社区移植版
 
 [![License: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
-[![Official UI](https://img.shields.io/badge/official%20UI-1.0.3-c8a2ff.svg)](upstream-cn.json)
 
 把《鸣潮》官方桌宠 **Wuwa Tappo 国服** 的完整官方桌面端移植到 Linux。界面、角色、字体与在线协议保持官方原样，原生后端使用 **Rust + Tauri 2 + WebKitGTK** 重建，不需要 Wine 或虚拟机。
 
@@ -59,7 +58,7 @@ npm ci
 npm run upstream:update
 npm run icons
 npm run prepare:frontend
-cargo build --release --manifest-path src-tauri/Cargo.toml
+cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 mkdir -p bin && cp src-tauri/target/release/wuwatappo-linux bin/
 npm run package
 ```
@@ -99,7 +98,7 @@ npm run package
 - 官方下载入口：<https://download-mc-wuwatappo.kurogames-global.com/download/>
 - 构建所用版本、下载地址、大小、SHA-256 与 Tauri 签名：[`upstream-cn.json`](upstream-cn.json)。
 
-源码仓库不存放官方前端资源、Windows 安装包、账号、Cookie 或点击记录。构建与发布流程在本地/CI 中从官方地址下载并校验安装包，再静态提取资源嵌入二进制。使用本项目仍需遵守官方服务条款；本项目与官方发行渠道无关。
+源码仓库不存放官方前端资源、Windows 安装包、账号、Cookie 或点击记录。构建与发布流程在本地从官方地址下载并校验安装包，再静态提取资源嵌入二进制。使用本项目仍需遵守官方服务条款；本项目与官方发行渠道无关。
 
 ### 构建依赖
 

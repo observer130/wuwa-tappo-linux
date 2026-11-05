@@ -90,7 +90,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 ### 快捷键
 
-1.0.3 起官方前端不再在 webview 内匹配 F7/F8/F9，而是通过原生命令与事件管理快捷键：
+官方前端不在 webview 内匹配 F7/F8/F9，而是通过原生命令与事件管理快捷键：
 
 - `shortcuts.rs` 维护 `动作 → {key, modifiers}` 表，默认 `gameMode`=F7、`switchScreen`=F8、`togglePet`=F9，持久化到应用数据目录的 `shortcuts.json`。
 - `get_app_shortcuts` 返回当前表；`set_app_shortcuts` 校验后写盘并广播 `app-shortcuts-changed`（重复组合返回 `duplicate`）；`set_shortcut_capture` 在设置页录制期间暂停匹配。
@@ -123,17 +123,17 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
                  └─ build/frontend/        嵌入二进制的最终前端（不入库）
 ```
 
-所有补丁都使用精确锚点并验证命中数量。官方升级导致锚点变化时，`prepare-frontend` 直接失败，CI 与发布流程随之中止。
+所有补丁都使用精确锚点并验证命中数量。官方升级导致锚点变化时，`prepare-frontend` 直接失败，不会产出行为不完整的前端。
 
 ### 宝箱计时
 
 官方前端在计算宝箱倒计时前会等待活动配置的 `server_time` 就绪。若登录态在 Vue 挂载前已经恢复，这个就绪标记可能一直为 `false`，两个宝箱按钮会停留在 `reward-btn--loading` 的灰色禁用态。
 
-`patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`，与 1.0.1 的行为一致。补丁还让“总是展示宝箱”在点击余额不足 1000 时也强制显示倒计时区域，并且同时显示左右两个宝箱；关闭开关时不再因鼠标悬停而常驻倒计时。宝箱已可领取时显示彩色按钮，领取后显示倒计时。
+`patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`。补丁还让“总是展示宝箱”在点击余额不足 1000 时也强制显示倒计时区域，并且同时显示左右两个宝箱；关闭开关时不再因鼠标悬停而常驻倒计时。宝箱已可领取时显示彩色按钮，领取后显示倒计时。
 
 ### 登录态存储
 
-官方前端把登录 token 保存为 `kuro_infoToken` Cookie（`document.cookie`）。WebKitGTK 目前不会向 `tauri://localhost` 自定义协议来源暴露 JavaScript 写入的 Cookie，表现为登录接口成功但后续 `user/me` 返回 10002，重启后也无法恢复登录。
+官方前端把登录 token 保存为 `kuro_infoToken` Cookie（`document.cookie`）。WebKitGTK 不会向 `tauri://localhost` 自定义协议来源暴露 JavaScript 写入的 Cookie，表现为登录接口成功但后续 `user/me` 返回 10002，重启后也无法恢复登录。
 
 `patchCookieStorage` 在读取时先尝试 `document.cookie`，失败或无值时回退到同源 LocalStorage；写入时同时尝试 Cookie 与 LocalStorage（带过期时间），删除时两边一起清除。LocalStorage 由 WebKitGTK 持久化在应用数据目录，因此主窗口、登录窗口和重启后的实例共享同一登录态。应用数据目录在启动时会被收紧到 0700（无法 chmod 时只记录警告），token 为明文存储，依赖该目录的本地权限，不使用系统密钥环。
 

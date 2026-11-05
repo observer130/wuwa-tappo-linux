@@ -5,7 +5,7 @@
 | 组件 | 版本 / 说明 |
 | --- | --- |
 | Rust | `rust-toolchain.toml` 锁定 1.97.1 |
-| Node.js | 20+（CI 使用 24） |
+| Node.js | 20+ |
 | 7-Zip | 仅构建期解包官方安装包，推荐 `7zz` 或 `7z` |
 | WebKitGTK | 4.1（开发包） |
 | GTK | 3.x 开发包 |
@@ -46,7 +46,7 @@ node scripts/sync-upstream.mjs
 
 ```bash
 node scripts/extract-assets.mjs \
-  --installer /path/to/WuwaTappo-cn_1.0.3_x64-setup.exe \
+  --installer "/path/to/WuwaTappo-cn_${VERSION}_x64-setup.exe" \
   --sevenzip "$(command -v 7z)" \
   --output frontend
 ```
@@ -81,7 +81,7 @@ npm test
 npm run test:rust
 ```
 
-`scaffold` 只用于开发和 CI 编译，打出的包无法显示官方界面。
+`scaffold` 只用于本地开发和编译检查，打出的包无法显示官方界面。
 
 ## 前端补丁
 
@@ -106,7 +106,7 @@ node scripts/inventory-contract.mjs frontend/assets tests/contracts.json
 npm test                   # 若出现未实现命令，backend-coverage 会失败
 ```
 
-1. 根据契约差异补 Rust 命令。1.0.3 新增的快捷键表由 `src-tauri/src/shortcuts.rs` 提供
+1. 根据契约差异补 Rust 命令。快捷键表由 `src-tauri/src/shortcuts.rs` 提供
    （`get_app_shortcuts` / `set_app_shortcuts` / `set_shortcut_capture` 与 `app-shortcut` 事件）。
 2. 检查 `prepare-frontend` 是否仍能命中全部锚点。
 3. 在本地验证登录、面板、输入计数、快捷键和联机。
@@ -133,4 +133,4 @@ npm 可设置 `npm_config_registry=https://registry.npmmirror.com`，或使用 `
 
 ## 发布
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：Ubuntu 24.04 上安装依赖、下载并校验官方安装包、提取前端、构建、跑测试、打包 tar.gz 并发布到 GitHub Releases。发布包不包含账号数据或构建机缓存。
+发布包由本地 `npm run package` 生成（见上文构建步骤），不包含账号数据或构建机缓存。发布前运行 `npm test` 与 `npm run test:rust`。
