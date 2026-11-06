@@ -559,8 +559,8 @@ fn over_auxiliary(app: &AppHandle, css_x: f64, css_y: f64) -> bool {
         .unwrap_or(false)
 }
 
-/// 1.0.3 moved the shortcut table into the native layer. The same evdev stream
-/// that counts key presses therefore also drives `app-shortcut`.
+/// The official frontend keeps the shortcut table in the native layer. The same
+/// evdev stream that counts key presses therefore also drives `app-shortcut`.
 fn dispatch_shortcut(
     app: &AppHandle,
     shortcuts: &crate::shortcuts::Shortcuts,

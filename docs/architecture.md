@@ -28,7 +28,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 ## 启动流程
 
 0. `main.rs` 在 GTK/WebKit 初始化前补齐 `GDK_BACKEND=x11` 与 `WEBKIT_FORCE_COMPOSITING_MODE=1`（已有值时尊重用户设置）。
-1. `lib.rs::run` 先获取进程级实例锁：`XDG_RUNTIME_DIR/wuwa-tappo-linux.instance.lock`（无 `XDG_RUNTIME_DIR` 时回退到 `/tmp/wuwa-tappo-linux-<uid>.instance.lock`）。锁由内核在进程退出时释放，锁 fd 设为 `FD_CLOEXEC`，不会被 WebKit 子进程继承。拿不到锁时直接退出，避免直接运行二进制或绕过 `run.sh` 时出现双实例。更新重启时在 `RunEvent::Exit` 中先释放锁，Tauri 再启动替换进程。
+1. `lib.rs::run` 先获取进程级实例锁：`XDG_RUNTIME_DIR/wuwa-tappo-linux.instance.lock`（无 `XDG_RUNTIME_DIR` 时回退到 `/tmp/wuwa-tappo-linux-<uid>.instance.lock`）。锁由内核在进程退出时释放，锁 fd 设为 `FD_CLOEXEC`，不会被 WebKit 子进程继承。拿不到锁时直接退出，避免直接运行二进制或绕过 `run.sh` 时出现双实例。退出时在 `RunEvent::Exit` 中释放锁；重启则先释放锁、启动替换进程，再让当前进程退出，避免新实例被实例锁挡掉。
 2. `lib.rs::run` 注册插件、`WindowState`、`InputMonitor`、`SocketState`，安装 IPC 处理器。
 3. `setup` 创建 `CounterStore`，初始化系统托盘/Dock 菜单与网络监视器。托盘不可用时菜单功能降级，关闭主窗口会直接退出。
 4. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
@@ -37,6 +37,8 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 7. `get_main_desktop_safe_area` 通过 EWMH (`_NET_ACTIVE_WINDOW`、`_NET_WM_STATE_FULLSCREEN`、dock 窗口) 返回前台全屏状态、`foregroundApplicationFullscreen` 和 `autoHideEdge`，与官方用于自动游戏模式/任务栏避让的字段保持一致。
 
 `main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口关闭时，如果托盘创建成功则隐藏到托盘；托盘菜单的“退出”会走前端 `quitApp` 的保存计数/断开 Socket 流程。托盘不可用或创建失败时关闭主窗口直接退出，避免留下无法唤出的后台进程和单实例锁。`F9` 在窗口隐藏到托盘时也会恢复窗口。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
+
+退出与重启由原生层结束进程。前端 `quitApp` / `restartApp` 先发 `cat-persist-clicks-before-exit` 与 `cat-disconnect-socket-before-exit` 并等待对应的 `done` 事件；后端立即回 `cat-persist-clicks-done`（点击计数由前端在每次上报成功时写盘）并在 `cat-disconnect-socket-before-exit` 时关闭 Socket，再回 `cat-disconnect-socket-done`。随后 `exit_app` / `restart_app` 隐藏窗口，在独立线程中等待 100 ms 后调用 `std::process::exit(0)`：在 GTK 事件回调里同步走 Tauri 的优雅退出会在 WebKitGTK teardown 阶段卡死，现有的关闭窗口路径也使用同一方式。重启会先释放单实例锁并 spawn 当前可执行文件，再退出当前进程。
 
 ## 命令路由
 

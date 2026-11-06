@@ -97,9 +97,9 @@ export function findAssetEntries(bytes) {
   return [...unique.values()];
 }
 
-// The inner application file name is not part of the official contract: 1.0.2
-// shipped it as WuwaTappo.exe while 1.0.3 lets NSIS name it from a variable
-// (`$_21_`). Identify the payload by its Tauri asset table instead.
+// The inner application file name is not part of the official contract: newer
+// NSIS scripts name it from a variable (for example `$_21_`) instead of the
+// product executable. Identify the payload by its Tauri asset table instead.
 export function selectEmbeddedPayload(candidates) {
   const failures = [];
   for (const candidate of candidates) {

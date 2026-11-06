@@ -8,7 +8,9 @@ import {
   patchDomesticSdkUrls,
   patchIndexLanguage,
   patchLoginReady,
+  patchRelaunch,
   patchSessionRestore,
+  RELAUNCH_SOURCE,
   SESSION_RESTORE_SOURCE,
 } from '../scripts/frontend-patches.mjs';
 
@@ -57,13 +59,20 @@ test('login tokens survive when WebKitGTK rejects tauri:// cookies', () => {
 });
 
 test('chest timers are not blocked by activity config readiness', () => {
-  const source = 'function Vn(){if(!R.isLoggedIn){Nt.value=0,Ht.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;const e=is()}function Xr(e){return Ta.value?e||yr.value?!0:T.value:!1}const zr=pe(()=>Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));';
+  const source = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;const e=fs(),t=performance.now()}function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
   const patched = patchChestTimers(source);
-  assert.ok(patched.includes('Qn.value=!0;'));
-  assert.ok(!patched.includes('if(!Qn.value)return;'));
-  assert.ok(patched.includes('!!(R.isLoggedIn&&yr.value||Ta.value&&e)'));
-  assert.ok(patched.includes('const zr=pe(()=>R.isLoggedIn&&yr.value?!0:'));
-  assert.throws(() => patchChestTimers('function Vn(){if(!Qn.value)return;}'), /Chest timer or visibility/);
+  assert.ok(patched.includes('eo.value=!0;'));
+  assert.ok(!patched.includes('if(!eo.value)return;'));
+  assert.ok(patched.includes('!!(A.isLoggedIn&&Cr.value||La.value&&e)'));
+  assert.ok(patched.includes('const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:'));
+  assert.throws(() => patchChestTimers('function Un(){if(!eo.value)return;}'), /Chest timer or visibility/);
+});
+
+test('relaunch goes through the native restart command', () => {
+  const patched = patchRelaunch(RELAUNCH_SOURCE);
+  assert.ok(patched.includes('invoke("restart_app")'));
+  assert.ok(!patched.includes('plugin:process|restart'));
+  assert.throws(() => patchRelaunch('async function relaunch(){}'), /relaunch changed/);
 });
 
 test('login readiness is reported after the Vue listener is installed', () => {
@@ -77,15 +86,15 @@ test('session restore retries transport failures but not auth rejections', async
   const patched = patchSessionRestore(SESSION_RESTORE_SOURCE);
   assert.ok(patched.includes('for(let t=0;t<3;t+=1)'));
   assert.ok(patched.includes('s==="network_error"||s==="timeout"'));
-  assert.throws(() => patchSessionRestore('function gn(e={}){}'), /session restore flow changed/);
+  assert.throws(() => patchSessionRestore('function an(e={}){}'), /session restore flow changed/);
 
   async function run(failures) {
     const attempts = [];
     const context = {
-      D: null,
-      ie: () => {},
-      ge: () => 'token',
-      Ke: async () => {
+      I: null,
+      Z: () => {},
+      le: () => 'token',
+      pe: async () => {
         attempts.push(1);
         const failure = failures[attempts.length - 1];
         if (failure) throw { reason: failure };
@@ -93,14 +102,14 @@ test('session restore retries transport failures but not auth rejections', async
       window: { dispatchEvent: () => {} },
       CustomEvent: class {},
       console: { error: () => {} },
-      c: () => {},
+      a: () => {},
       l: () => {},
-      d: error => error.reason,
+      w: error => error.reason,
       setTimeout: callback => callback(),
       Promise,
       Error,
     };
-    vm.runInNewContext(`${patched};globalThis.bootstrap=gn;`, context);
+    vm.runInNewContext(`${patched};globalThis.bootstrap=an;`, context);
     const restored = await context.bootstrap({ emitLoginSuccess: false });
     return { restored, attempts: attempts.length };
   }

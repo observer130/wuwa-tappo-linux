@@ -40,16 +40,16 @@ export function patchCookieStorage(source) {
 // permanently disabled. The timers themselves already fall back to Date.now(),
 // so mark readiness when the view first computes them.
 export function patchChestTimers(source) {
-  const timer = 'function Vn(){if(!R.isLoggedIn){Nt.value=0,Ht.value=0,Po.value=0,To.value=0;return}if(!Qn.value)return;';
-  const visibility = 'function Xr(e){return Ta.value?e||yr.value?!0:T.value:!1}';
-  const panes = 'const zr=pe(()=>Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));';
+  const timer = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;';
+  const visibility = 'function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}';
+  const panes = 'const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
   if (source.split(timer).length !== 2 || source.split(visibility).length !== 2 || source.split(panes).length !== 2) {
     throw new Error('Chest timer or visibility code changed; reconcile the frontend before building.');
   }
   return source
-    .replace(timer, 'function Vn(){if(!R.isLoggedIn){Nt.value=0,Ht.value=0,Po.value=0,To.value=0;return}Qn.value=!0;')
-    .replace(visibility, 'function Xr(e){return !!(R.isLoggedIn&&yr.value||Ta.value&&e)}')
-    .replace(panes, 'const zr=pe(()=>R.isLoggedIn&&yr.value?!0:Kr.value==="right"?!1:Kr.value==="left"?Xr(!0):Xr(Wn.value)),jr=pe(()=>R.isLoggedIn&&yr.value?!0:Kr.value==="left"?!1:(Kr.value==="right",Xr(Gn.value)));');
+    .replace(timer, 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}eo.value=!0;')
+    .replace(visibility, 'function Qr(e){return !!(A.isLoggedIn&&Cr.value||La.value&&e)}')
+    .replace(panes, 'const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));');
 }
 
 export function patchLoginReady(source) {
@@ -61,7 +61,19 @@ export function patchLoginReady(source) {
   return source.replace(original, replacement);
 }
 
-export const SESSION_RESTORE_SOURCE = 'function gn(e={}){return ie(),ge("infoToken")?D||(D=(async()=>{try{return await Ke(),e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success")),!0}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),c("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:d(n)},"warn"),!1}finally{D=null}})(),D):Promise.resolve(!1)}';
+export const RELAUNCH_SOURCE = 'async function relaunch(){await invoke("plugin:process|restart")}';
+
+// The process plugin restarts from the Tauri main thread, which tears down
+// WebKitGTK synchronously and freezes the app. Route the relaunch through a
+// native command that spawns the next process before this one exits.
+export function patchRelaunch(source) {
+  if (source.split(RELAUNCH_SOURCE).length !== 2) {
+    throw new Error('Original plugin process relaunch changed; reconcile the restart path before building.');
+  }
+  return source.replace(RELAUNCH_SOURCE, 'async function relaunch(){await invoke("restart_app")}');
+}
+
+export const SESSION_RESTORE_SOURCE = 'function an(e={}){return Z(),le("infoToken")?I||(I=(async()=>{try{return await pe(),e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success")),!0}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),a("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:w(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
 
 // A cold start can race the network coming up. The official code treats every
 // `user/me` failure as "no saved login", so a transient DNS/connect error hides
@@ -71,7 +83,7 @@ export function patchSessionRestore(source) {
   if (source.split(SESSION_RESTORE_SOURCE).length !== 2) {
     throw new Error('Original session restore flow changed; reconcile auth retry before building.');
   }
-  const replacement = 'function gn(e={}){return ie(),ge("infoToken")?D||(D=(async()=>{try{for(let t=0;t<3;t+=1){try{await Ke();e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success"));return!0}catch(n){const s=d(n);if(t<2&&(s==="network_error"||s==="timeout")){await new Promise(o=>setTimeout(o,1e3*(t+1)));continue}throw n}}return!1}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),c("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:d(n)},"warn"),!1}finally{D=null}})(),D):Promise.resolve(!1)}';
+  const replacement = 'function an(e={}){return Z(),le("infoToken")?I||(I=(async()=>{try{for(let t=0;t<3;t+=1){try{await pe();e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success"));return!0}catch(n){const s=w(n);if(t<2&&(s==="network_error"||s==="timeout")){await new Promise(o=>setTimeout(o,1e3*(t+1)));continue}throw n}}return!1}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),a("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:w(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
   return source.replace(SESSION_RESTORE_SOURCE, replacement);
 }
 

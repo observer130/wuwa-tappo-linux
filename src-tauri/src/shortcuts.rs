@@ -1,12 +1,12 @@
 //! Configurable application shortcuts.
 //!
-//! Up to 1.0.2 the official frontend matched F7/F8/F9 inside the webview. 1.0.3
-//! moved that responsibility to the native layer: the settings panel reads and
-//! writes a shortcut table through `get_app_shortcuts` / `set_app_shortcuts`,
-//! pauses matching through `set_shortcut_capture`, and expects an
-//! `app-shortcut` event carrying the action name. Linux matches the table
-//! against the same evdev stream that already counts key presses, so the
-//! shortcuts keep working while another window has focus.
+//! The official frontend delegates shortcut matching to the native layer: the
+//! settings panel reads and writes a shortcut table through
+//! `get_app_shortcuts` / `set_app_shortcuts`, pauses matching through
+//! `set_shortcut_capture`, and expects an `app-shortcut` event carrying the
+//! action name. Linux matches the table against the same evdev stream that
+//! already counts key presses, so the shortcuts keep working while another
+//! window has focus.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

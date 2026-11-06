@@ -4,6 +4,7 @@ use std::{
     io,
     os::unix::{fs::OpenOptionsExt, io::AsRawFd},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 const LOCK_FILE: &str = "wuwa-tappo-linux.instance.lock";
@@ -11,6 +12,30 @@ const LOCK_FILE: &str = "wuwa-tappo-linux.instance.lock";
 /// Holds the process-wide instance lock until dropped.
 pub struct InstanceLock {
     _file: File,
+}
+
+/// Shared handle to the process-wide instance lock.
+///
+/// The managed handle lets the restart path release the lock before the
+/// replacement process starts, while the event loop keeps its own clone for
+/// the exit path.
+#[derive(Clone)]
+pub struct SharedLock {
+    inner: Arc<Mutex<Option<InstanceLock>>>,
+}
+
+impl SharedLock {
+    pub fn new(lock: InstanceLock) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(lock))),
+        }
+    }
+
+    pub fn release(&self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.take();
+        }
+    }
 }
 
 /// Try to become the one running instance.
@@ -110,6 +135,20 @@ mod tests {
             .expect("open lock")
             .expect("after release");
         drop(second);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shared_lock_can_be_released_before_exit() {
+        let path = temporary_lock();
+        let first = acquire_at(&path)
+            .expect("open lock")
+            .expect("first instance");
+        let shared = SharedLock::new(first);
+        assert!(acquire_at(&path).expect("open lock").is_none());
+
+        shared.release();
+        assert!(acquire_at(&path).expect("open lock").is_some());
         let _ = std::fs::remove_file(path);
     }
 }

@@ -14,7 +14,7 @@ test('CN runtime and Windows installer have separate exhaustive inventories', ()
   assert.equal(contract.commands.filter(item => item.kind === 'plugin').length, 116);
   assert.equal(contract.events.length, 63);
   assert.equal(contract.sourceApplication.region, 'CN');
-  assert.equal(contract.sourceApplication.entryModule, 'index-CuzHFfJW.js');
+  assert.equal(contract.sourceApplication.entryModule, 'index-CM6qA69G.js');
   const lock = JSON.parse(fs.readFileSync(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
   assert.equal(contract.sourceApplication.version, lock.version);
   assert.ok(!Object.hasOwn(contract.runtimeConstants, 'authCallbackScheme'));
@@ -36,7 +36,7 @@ test('all command and event evidence preserves JavaScript and UTF-8 byte ranges'
     assert.ok(site.file.endsWith('.js'));
     assert.ok(site.context.includes(site.source));
   }
-  assert.ok(contract.commands.find(item => item.name === 'get_boot_diagnostics').callSites.some(site => site.callee === 'Ct'));
+  assert.ok(contract.commands.find(item => item.name === 'get_boot_diagnostics').callSites.some(site => site.callee === 'kt'));
   assert.ok(contract.commands.find(item => item.name === 'open_panel_window').callSites.some(site => site.callee === 'u'));
 });
 
@@ -49,7 +49,7 @@ test('remaining dynamic invoke sites are framework plugin factories rather than 
   }
 });
 
-test('1.0.3 moved application shortcuts into the native layer', () => {
+test('application shortcuts are matched in the native layer', () => {
   for (const name of ['get_app_shortcuts', 'set_app_shortcuts', 'set_shortcut_capture']) {
     const command = contract.commands.find(item => item.name === name);
     assert.equal(command.kind, 'application', `${name} is not an application command`);

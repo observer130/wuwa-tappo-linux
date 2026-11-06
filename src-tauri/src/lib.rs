@@ -13,7 +13,7 @@ mod windows;
 
 use tauri::{
     ipc::{Invoke, InvokeBody},
-    Manager,
+    Emitter, Listener, Manager,
 };
 
 const SYSTEM_COMMANDS: &[&str] = &[
@@ -87,18 +87,17 @@ fn handle(invoke: Invoke) -> bool {
 pub fn run() {
     // This lock covers direct binary launches and desktop entries that bypass
     // run.sh. Keep the guard alive until the event loop exits.
-    let instance_lock =
-        std::sync::Arc::new(std::sync::Mutex::new(match single_instance::acquire() {
-            Ok(Some(lock)) => Some(lock),
-            Ok(None) => {
-                eprintln!("Wuwa Tappo is already running.");
-                return;
-            }
-            Err(error) => {
-                eprintln!("Could not enforce a single instance: {error}");
-                return;
-            }
-        }));
+    let instance_lock = single_instance::SharedLock::new(match single_instance::acquire() {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            eprintln!("Wuwa Tappo is already running.");
+            return;
+        }
+        Err(error) => {
+            eprintln!("Could not enforce a single instance: {error}");
+            return;
+        }
+    });
     // Tauri's update restart spawns the replacement process just before this
     // one exits. Release the lock first so the new process can acquire it.
     let exit_lock = instance_lock.clone();
@@ -108,6 +107,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .manage(windows::WindowState::default())
+        .manage(instance_lock.clone())
         .manage(input::InputMonitor::new())
         .manage(socket::SocketState::default())
         .invoke_handler(handle)
@@ -125,6 +125,20 @@ pub fn run() {
             shortcuts::setup(&handle)?;
             app.manage(system::start_network_monitor(handle.clone())?);
             windows::setup(&handle)?;
+            // The official frontend asks the host to flush click counts and to
+            // close its socket before quitting, then waits for the matching
+            // `done` events. The counters themselves live in the webview and
+            // are persisted by the frontend whenever a click report succeeds,
+            // so acknowledge the flush instead of letting the webview time out.
+            let persist = handle.clone();
+            handle.listen("cat-persist-clicks-before-exit", move |_| {
+                let _ = persist.emit("cat-persist-clicks-done", ());
+            });
+            let disconnect = handle.clone();
+            handle.listen("cat-disconnect-socket-before-exit", move |_| {
+                socket::shutdown(&disconnect);
+                let _ = disconnect.emit("cat-disconnect-socket-done", ());
+            });
             if let Err(error) = input::start(handle.clone()) {
                 eprintln!("Global input unavailable: {error}");
             }
@@ -149,9 +163,7 @@ pub fn run() {
             if let Err(error) = app.state::<input::InputMonitor>().stop() {
                 eprintln!("Input shutdown failed: {error}");
             }
-            if let Ok(mut guard) = exit_lock.lock() {
-                guard.take();
-            }
+            exit_lock.release();
         }
     });
 }

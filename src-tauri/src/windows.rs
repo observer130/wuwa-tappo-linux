@@ -40,6 +40,7 @@ pub const COMMANDS: &[&str] = &[
     "open_oss_notice_window",
     "open_panel_window",
     "open_update_window",
+    "restart_app",
     "popup_main_dock_context_menu",
     "report_webview_metrics",
     "raise_panel_window_above_pets",
@@ -1111,17 +1112,70 @@ pub fn dispatch(
                 number(args, "y")?,
             )
         }
-        "exit_app" => {
-            app.exit(0);
-        }
+        "exit_app" => terminate_process(app),
         // The maintenance notice covers the whole app. Its exit button has no
         // in-app destination, so it closes the process like the original client.
-        "exit_maintenance_app" => {
-            app.exit(0);
-        }
+        "exit_maintenance_app" => terminate_process(app),
+        // The patched relaunch() calls this instead of the process plugin,
+        // whose main-thread restart tears down WebKitGTK before the next
+        // process can start.
+        "restart_app" => restart_process(app),
         _ => return Err(format!("Unsupported native command {command} from {label}")),
     }
     Ok(Value::Null)
+}
+
+fn hide_windows(app: &AppHandle) {
+    for label in [
+        "main",
+        "panel",
+        "login",
+        "about",
+        "oss-notice",
+        "update",
+        "toast",
+    ] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.hide();
+        }
+    }
+}
+
+/// Terminate without Tauri's graceful teardown.
+///
+/// Destroying WebKitGTK webviews synchronously from the event loop can deadlock
+/// on this stack (the close path hits the same problem), so hide the UI and let
+/// a separate thread end the process after the current event handler returns.
+fn terminate_process(app: &AppHandle) {
+    hide_windows(app);
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::process::exit(0);
+    });
+}
+
+fn restart_process(app: &AppHandle) {
+    // Release the single-instance lock first: the replacement process starts
+    // right away and would otherwise exit because the old process still owns
+    // the lock.
+    if let Some(lock) = app.try_state::<crate::single_instance::SharedLock>() {
+        lock.release();
+    }
+    let executable = std::env::current_exe();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    hide_windows(app);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        match executable {
+            Ok(executable) => {
+                if let Err(error) = std::process::Command::new(executable).args(args).spawn() {
+                    eprintln!("Could not restart Wuwa Tappo Linux: {error}");
+                }
+            }
+            Err(error) => eprintln!("Could not resolve the application path: {error}"),
+        }
+        std::process::exit(0);
+    });
 }
 
 pub fn setup(app: &AppHandle) -> Result<(), String> {

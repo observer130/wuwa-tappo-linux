@@ -35,10 +35,11 @@ sudo dnf install webkit2gtk4.1 gtk3 libxkbcommon libappindicator-gtk3
 
 ### 使用发布包
 
-从 [Releases](https://github.com/observer130/wuwa-tappo-linux/releases) 下载 `wuwa-tappo-linux-<version>-x86_64.tar.gz`，校验后解压：
+从 [Releases](https://github.com/observer130/wuwa-tappo-linux/releases) 下载 `wuwa-tappo-linux-<version>-x86_64.tar.gz`，解压：
 
 ```bash
-sha256sum -c wuwa-tappo-linux-x.y.z-1-x86_64.tar.gz.sha256  # 可选
+# 可选：计算校验和，与 Release 页面该资产显示的 sha256 对比
+sha256sum wuwa-tappo-linux-x.y.z-1-x86_64.tar.gz
 tar -xzf wuwa-tappo-linux-x.y.z-1-x86_64.tar.gz
 cd wuwa-tappo-linux-x.y.z-1-x86_64
 ./install.sh   # 加入 input 组、注册桌面菜单项
