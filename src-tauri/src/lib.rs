@@ -186,6 +186,10 @@ mod tests {
         // Constructing a client config is what the WebSocket proxy does; it
         // panics when rustls cannot select a process-level crypto provider.
         let _ = rustls::ClientConfig::builder();
+        // rustls can auto-select the single enabled provider feature, so assert
+        // that the explicit startup install really ran instead of relying on
+        // that fallback.
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 
     #[test]

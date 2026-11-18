@@ -1,5 +1,5 @@
 use crate::geometry::{work_area_insets, HitRegion};
-use gtk::prelude::{WidgetExt, WidgetExtManual};
+use gtk::prelude::{Cast, ContainerExt, WidgetExt, WidgetExtManual};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -288,31 +288,47 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
     result
 }
 
-/// The shaped X11 window still receives crossing notifications when the
-/// pointer enters or leaves the pet's input region, even on Wayland where
-/// XWayland then stops reporting global pointer coordinates to the polling
-/// thread. A leave is forwarded as an out-of-region `mouse-move` so the
-/// official frontend clears its hover state exactly as it does for a real move
-/// away from the pet; an enter asks the polling thread to report the next
-/// sample even if the pointer returns to the same pixel it left from.
+/// The shaped X11 window receives crossing notifications when the pointer
+/// enters or leaves the pet's input region. On X11 the events can be delivered
+/// to the native child that owns the pointer (the WebKit view), not only to the
+/// toplevel, so handlers are installed on every native widget in the window
+/// hierarchy.
 fn watch_main_pointer_crossing(app: &AppHandle) -> Result<(), String> {
     let gtk_window = main_window(app)?.gtk_window().map_err(err)?;
-    gtk_window.add_events(
-        gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
-    );
-    let handle = app.clone();
-    gtk_window.connect_leave_notify_event(move |_, _| {
-        emit_pointer_leave(&handle);
-        gtk::glib::Propagation::Proceed
-    });
-    let handle = app.clone();
-    gtk_window.connect_enter_notify_event(move |_, _| {
-        if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
-            monitor.request_pointer_resync();
-        }
-        gtk::glib::Propagation::Proceed
-    });
+    install_crossing_handlers(gtk_window.upcast_ref::<gtk::Widget>(), app);
     Ok(())
+}
+
+fn install_crossing_handlers(widget: &gtk::Widget, app: &AppHandle) {
+    {
+        widget.add_events(
+            gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
+        );
+        let handle = app.clone();
+        widget.connect_leave_notify_event(move |_, _| {
+            if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
+                // Stop the polling loop before forwarding the leave: XWayland
+                // keeps reporting the frozen last-inside position, and that
+                // sample must not re-open the hover after the synthetic move
+                // below closes it.
+                monitor.mark_pointer_left();
+            }
+            emit_pointer_leave(&handle);
+            gtk::glib::Propagation::Proceed
+        });
+        let handle = app.clone();
+        widget.connect_enter_notify_event(move |_, _| {
+            if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
+                monitor.mark_pointer_entered();
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        for child in container.children() {
+            install_crossing_handlers(&child, app);
+        }
+    }
 }
 
 /// A swallow (native click forwarding or dock drag) temporarily makes the whole
@@ -327,7 +343,25 @@ fn emit_pointer_leave(app: &AppHandle) {
     if swallowed {
         return;
     }
-    let _ = app.emit("mouse-move", crate::input::POINTER_LEAVE_POSITION);
+    // The official frontend converts the payload with its own cached window
+    // origin/scale, so derive the out-of-region position from the live window
+    // instead of assuming the window sits at a non-negative screen position.
+    let (origin_x, origin_y, tauri_scale) = main_window(app)
+        .ok()
+        .map(|window| {
+            let scale = window
+                .scale_factor()
+                .ok()
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0);
+            match window.inner_position().ok() {
+                Some(position) => (position.x as f64, position.y as f64, scale),
+                None => (0.0, 0.0, scale),
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0));
+    let payload = crate::input::pointer_leave_position(origin_x, origin_y, tauri_scale);
+    let _ = app.emit("mouse-move", payload);
 }
 
 fn build_window(

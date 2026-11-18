@@ -107,7 +107,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 2. `socket.rs` 用 `tokio-tungstenite` 建立连接，通过 Tauri Channel 推送 `open` / `text` / `binary` / `error` / `close`。
 3. `native_ws_send` / `native_ws_close` 负责发送与清理；窗口刷新或销毁时关闭该窗口的全部连接。
 4. 不转发任意请求头、Cookie 或 Origin，避免把代理变成通用网络出口。
-5. 原生 TLS 使用 rustls，启动时显式安装 `ring` provider；`tokio-tungstenite` 本身不会自动选择 crypto provider，缺少这一步会让每次 WebSocket 建连在构造 TLS 配置时 panic。rustls 关闭默认 feature 以避开 `aws-lc-rs`，因此必须保留 `tls12` feature：官方 endpoint 只协商 TLS 1.2，只提供 TLS 1.3 会被服务端用 `protocol_version` alert 拒绝。
+5. 原生 TLS 使用 rustls：必须启用 `ring` provider feature，并在启动时显式安装为进程默认 provider（`tokio-tungstenite` 不会自动选择 provider；未启用任何 provider feature 时，构造 TLS 配置会 panic）。rustls 关闭默认 feature 以避开 `aws-lc-rs`，因此必须保留 `tls12` feature：官方 endpoint 只协商 TLS 1.2，只提供 TLS 1.3 会被服务端用 `protocol_version` alert 拒绝。升级 `tokio-tungstenite` 时要同步对齐 rustls 大版本，避免同时编译两个 rustls。
 
 ## 计数与日志
 
@@ -134,7 +134,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 `patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`。可见性保持官方规则：加载态与点击余额 ≥2000 时，悬停桌宠显示左右两个倒计时；余额 1000~2000 时按官方单侧显示；余额 <1000 且配置就绪时悬停不显示；宝箱可领取时无需悬停即显示彩色按钮，领取后显示倒计时。未登录时会和官方一样显示两个宝箱按钮，点击进入登录流程。移植版的“总是展示宝箱”在已登录时绕过余额门槛并同时显示左右两个宝箱；领取仍受官方 `totalClickCount` 校验。
 
-Linux 上指针离开桌宠的 XShape 输入区域后，XWayland 不再提供全局指针坐标，轮询线程无法自行结束悬停状态。主窗口的 GTK `leave-notify-event` 会把这次离开转发为一个位于所有命中区域之外的 `mouse-move`，官方前端的悬停判定（`jc`）因此和 Windows 一样清除悬停，倒计时不会常驻；`enter-notify-event` 则让轮询线程重新上报一次位置，指针回到离开时的同一像素也能重新触发悬停。
+XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWayland 不再提供全局指针坐标，轮询线程无法自行结束悬停状态。主窗口的 GTK `leave-notify-event` 会按当前窗口原点与缩放计算一个位于所有命中区域之外的 `mouse-move`（不依赖窗口在屏幕上的正坐标），官方前端的悬停判定（`jc`）因此与 Windows 一样清除悬停；`leave` 同时会取消 enter 触发的挂起重报，避免 XWayland 冻结的旧坐标在快速划过时重新点亮悬停。`enter-notify-event` 会让轮询线程重新上报一次位置，指针回到离开时的同一像素也能重新触发悬停。窗口吞鼠标/拖动（swallow）期间不转发合成离开，避免影响拖拽；纯 X11 会话下轮询仍可跟踪区域外坐标，这次转发只是冗余清理。
 
 ### 登录态存储
 
