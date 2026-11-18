@@ -1,6 +1,6 @@
 [package]
 name = "wuwatappo-linux"
-version = "1.0.4-1"
+version = "1.0.4-2"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux community port of the Wuwa Tappo CN desktop pet"
@@ -26,6 +26,10 @@ serde_json = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["macros", "net", "sync", "time"] }
 tokio-tungstenite = { version = "=0.26.2", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# tokio-tungstenite builds rustls with default features off and does not
+# select a crypto provider by itself. Pick ring explicitly; lib.rs installs
+# it as the process default before the native WebSocket proxy runs.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 libc = "0.2"
 gtk = "0.18"
 gdkx11 = "0.18"

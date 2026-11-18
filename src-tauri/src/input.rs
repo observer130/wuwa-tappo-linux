@@ -30,6 +30,30 @@ pub struct MousePosition {
     pub member_id: Option<u64>,
 }
 
+/// CSS-space offset for the synthetic pointer-leave payload. It is deliberately
+/// far from the origin so a stale cached window position (the official frontend
+/// caches `innerPosition`/scale) still maps to a negative viewport coordinate.
+pub const POINTER_LEAVE_CSS_OFFSET: f64 = -100000.0;
+
+/// Payload that tells the official frontend the pointer left the pet. The
+/// frontend converts a `mouse-move` payload back to viewport CSS coordinates
+/// with `(payload - windowOrigin) / tauriScale`, so derive the payload from the
+/// live window origin and scale instead of hardcoding a screen position: the
+/// result stays outside every hit region even when the window origin is
+/// negative (a monitor left of or above the primary one).
+pub fn pointer_leave_position(origin_x: f64, origin_y: f64, tauri_scale: f64) -> MousePosition {
+    let scale = if tauri_scale.is_finite() && tauri_scale > 0.0 {
+        tauri_scale
+    } else {
+        1.0
+    };
+    MousePosition {
+        x: origin_x + POINTER_LEAVE_CSS_OFFSET * scale,
+        y: origin_y + POINTER_LEAVE_CSS_OFFSET * scale,
+        member_id: None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct MouseButton {
     button: &'static str,
@@ -45,6 +69,7 @@ struct MonitorState {
     running: AtomicBool,
     granted: AtomicBool,
     stop: AtomicBool,
+    pointer_resync: AtomicBool,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
     auxiliary_hit_test: Mutex<Option<AuxiliaryHitTest>>,
@@ -95,6 +120,7 @@ impl InputMonitor {
                 running: AtomicBool::new(false),
                 granted: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
+                pointer_resync: AtomicBool::new(false),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
                 auxiliary_hit_test: Mutex::new(None),
@@ -129,6 +155,23 @@ impl InputMonitor {
 
     pub fn status(&self) -> InputStatus {
         self.state.status()
+    }
+
+    /// The pointer entered the shaped input region. Ask the polling loop to
+    /// report the next sample even when its coordinates did not change:
+    /// XWayland freezes the pointer position while it is outside the region, so
+    /// a re-entry at the same pixel as the leave point would otherwise not end
+    /// the cleared hover state.
+    pub fn mark_pointer_entered(&self) {
+        self.state.pointer_resync.store(true, Ordering::Release);
+    }
+
+    /// The pointer left the shaped input region. Cancel a pending forced
+    /// resync: when an enter is immediately followed by a leave, the forced
+    /// report would replay XWayland's frozen last-inside position and re-open
+    /// the hover that the leave handler has just cleared.
+    pub fn mark_pointer_left(&self) {
+        self.state.pointer_resync.store(false, Ordering::Release);
     }
 
     pub fn start(&self, app: AppHandle) -> Result<InputStatus, String> {
@@ -787,6 +830,9 @@ fn run_monitor(
             }
         }
         // Cursor movement is polled so it also works for absolute/touchpad devices.
+        if state.pointer_resync.swap(false, Ordering::AcqRel) {
+            last_position = None;
+        }
         if last_move_emit.elapsed() >= Duration::from_millis(33) {
             if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
                 if !over_auxiliary(&app, css_x, css_y) {
@@ -811,6 +857,58 @@ fn run_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_leave_payload_maps_outside_the_viewport() {
+        for (origin_x, origin_y, scale) in
+            [(0.0, 0.0, 1.0), (2560.0, 0.0, 1.5), (-3840.0, -120.0, 1.25)]
+        {
+            let payload = pointer_leave_position(origin_x, origin_y, scale);
+            let css_x = (payload.x - origin_x) / scale;
+            let css_y = (payload.y - origin_y) / scale;
+            assert!(
+                (css_x - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_x}/{scale}"
+            );
+            assert!(
+                (css_y - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_y}/{scale}"
+            );
+            assert!(css_x < 0.0 && css_y < 0.0);
+            assert!(payload.member_id.is_none());
+        }
+        let serialized =
+            serde_json::to_value(pointer_leave_position(0.0, 0.0, 1.0)).expect("serialize leave");
+        assert!(serialized.get("memberId").is_none());
+    }
+
+    #[test]
+    fn pointer_leave_payload_survives_a_stale_window_origin() {
+        // The official frontend caches innerPosition/scale; a leave right after
+        // a monitor switch may still be converted with the previous origin.
+        let scale = 1.5;
+        let payload = pointer_leave_position(2560.0, 0.0, scale);
+        for stale_origin_x in [-5120.0, -2560.0, 0.0, 2560.0, 5120.0] {
+            assert!(
+                (payload.x - stale_origin_x) / scale < 0.0,
+                "{stale_origin_x}"
+            );
+            assert!((payload.y - 0.0) / scale < 0.0);
+        }
+    }
+
+    #[test]
+    fn pointer_leave_cancels_a_pending_resync() {
+        let monitor = InputMonitor::new();
+        assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+        monitor.mark_pointer_entered();
+        assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
+        monitor.mark_pointer_entered();
+        monitor.mark_pointer_left();
+        assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+        monitor.mark_pointer_entered();
+        assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
+    }
 
     #[test]
     fn gamepad_buttons_stay_out_of_keyboard_and_mouse_ranges() {
@@ -864,6 +962,7 @@ mod tests {
             running: AtomicBool::new(false),
             granted: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            pointer_resync: AtomicBool::new(false),
             error: Mutex::new(Some("input_monitor_not_running".into())),
             member_resolver: Mutex::new(None),
             auxiliary_hit_test: Mutex::new(None),

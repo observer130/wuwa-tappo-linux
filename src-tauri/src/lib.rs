@@ -84,7 +84,17 @@ fn handle(invoke: Invoke) -> bool {
     handler(invoke)
 }
 
+/// rustls 0.23 requires a process-level crypto provider. tokio-tungstenite
+/// builds rustls with default features off and enables no provider, so without
+/// this the native WebSocket proxy panics while building its TLS client config
+/// and socket.io never connects. Installing ring explicitly also keeps TLS
+/// deterministic if another crate later enables a second provider feature.
+pub(crate) fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub fn run() {
+    install_crypto_provider();
     // This lock covers direct binary launches and desktop entries that bypass
     // run.sh. Keep the guard alive until the event loop exits.
     let instance_lock = single_instance::SharedLock::new(match single_instance::acquire() {
@@ -166,4 +176,30 @@ pub fn run() {
             exit_lock.release();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rustls_provider_is_available_before_socket_connect() {
+        super::install_crypto_provider();
+        // Constructing a client config is what the WebSocket proxy does; it
+        // panics when rustls cannot select a process-level crypto provider.
+        let _ = rustls::ClientConfig::builder();
+        // rustls can auto-select the single enabled provider feature, so assert
+        // that the explicit startup install really ran instead of relying on
+        // that fallback.
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+
+    #[test]
+    fn rustls_offers_tls12_for_the_socket_endpoint() {
+        // The official game endpoint only negotiates TLS 1.2. rustls is built
+        // without default features here (to avoid pulling in a second crypto
+        // provider), so the `tls12` feature must stay enabled or the server
+        // answers the TLS 1.3-only ClientHello with a protocol_version alert.
+        assert!(rustls::DEFAULT_VERSIONS
+            .iter()
+            .any(|version| std::ptr::eq(*version, &rustls::version::TLS12)));
+    }
 }

@@ -1,4 +1,5 @@
 use crate::geometry::{work_area_insets, HitRegion};
+use gtk::prelude::{Cast, ContainerExt, WidgetExt, WidgetExtManual};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -285,6 +286,82 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         }
     }
     result
+}
+
+/// The shaped X11 window receives crossing notifications when the pointer
+/// enters or leaves the pet's input region. On X11 the events can be delivered
+/// to the native child that owns the pointer (the WebKit view), not only to the
+/// toplevel, so handlers are installed on every native widget in the window
+/// hierarchy.
+fn watch_main_pointer_crossing(app: &AppHandle) -> Result<(), String> {
+    let gtk_window = main_window(app)?.gtk_window().map_err(err)?;
+    install_crossing_handlers(gtk_window.upcast_ref::<gtk::Widget>(), app);
+    Ok(())
+}
+
+fn install_crossing_handlers(widget: &gtk::Widget, app: &AppHandle) {
+    {
+        widget.add_events(
+            gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
+        );
+        let handle = app.clone();
+        widget.connect_leave_notify_event(move |_, _| {
+            if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
+                // Stop the polling loop before forwarding the leave: XWayland
+                // keeps reporting the frozen last-inside position, and that
+                // sample must not re-open the hover after the synthetic move
+                // below closes it.
+                monitor.mark_pointer_left();
+            }
+            emit_pointer_leave(&handle);
+            gtk::glib::Propagation::Proceed
+        });
+        let handle = app.clone();
+        widget.connect_enter_notify_event(move |_, _| {
+            if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
+                monitor.mark_pointer_entered();
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        for child in container.children() {
+            install_crossing_handlers(&child, app);
+        }
+    }
+}
+
+/// A swallow (native click forwarding or dock drag) temporarily makes the whole
+/// window interactive. A leave then means the pointer left the window, not the
+/// pet, and feeding a synthetic position into the official drag handler would
+/// teleport the dock. Only the region-shaped state reports a pet hover leaving.
+fn emit_pointer_leave(app: &AppHandle) {
+    let swallowed = app
+        .try_state::<WindowState>()
+        .and_then(|state| state.hit.read().ok().map(|hit| hit.swallow))
+        .unwrap_or(false);
+    if swallowed {
+        return;
+    }
+    // The official frontend converts the payload with its own cached window
+    // origin/scale, so derive the out-of-region position from the live window
+    // instead of assuming the window sits at a non-negative screen position.
+    let (origin_x, origin_y, tauri_scale) = main_window(app)
+        .ok()
+        .map(|window| {
+            let scale = window
+                .scale_factor()
+                .ok()
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0);
+            match window.inner_position().ok() {
+                Some(position) => (position.x as f64, position.y as f64, scale),
+                None => (0.0, 0.0, scale),
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0));
+    let payload = crate::input::pointer_leave_position(origin_x, origin_y, tauri_scale);
+    let _ = app.emit("mouse-move", payload);
 }
 
 fn build_window(
@@ -1186,6 +1263,9 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_millis(50));
     if let Err(error) = apply_main_input_shape(app) {
         eprintln!("Initial input shape failed: {error}");
+    }
+    if let Err(error) = watch_main_pointer_crossing(app) {
+        eprintln!("Main window hover tracking failed: {error}");
     }
     if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--inspect") {
         w.open_devtools();
