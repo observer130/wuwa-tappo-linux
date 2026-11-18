@@ -30,17 +30,29 @@ pub struct MousePosition {
     pub member_id: Option<u64>,
 }
 
-/// Payload sent when the pointer leaves the pet. XWayland stops reporting
-/// global pointer coordinates once the pointer leaves the shaped input region
-/// on Wayland, so the polling loop cannot emit the move that ends a hover. The
-/// GTK leave handler sends this position outside every hit region instead; the
-/// official frontend's hover test (`jc`) then clears its state exactly as it
-/// would for a real move to an empty part of the overlay.
-pub const POINTER_LEAVE_POSITION: MousePosition = MousePosition {
-    x: -1.0,
-    y: -1.0,
-    member_id: None,
-};
+/// CSS-space offset for the synthetic pointer-leave payload. It is deliberately
+/// far from the origin so a stale cached window position (the official frontend
+/// caches `innerPosition`/scale) still maps to a negative viewport coordinate.
+pub const POINTER_LEAVE_CSS_OFFSET: f64 = -100000.0;
+
+/// Payload that tells the official frontend the pointer left the pet. The
+/// frontend converts a `mouse-move` payload back to viewport CSS coordinates
+/// with `(payload - windowOrigin) / tauriScale`, so derive the payload from the
+/// live window origin and scale instead of hardcoding a screen position: the
+/// result stays outside every hit region even when the window origin is
+/// negative (a monitor left of or above the primary one).
+pub fn pointer_leave_position(origin_x: f64, origin_y: f64, tauri_scale: f64) -> MousePosition {
+    let scale = if tauri_scale.is_finite() && tauri_scale > 0.0 {
+        tauri_scale
+    } else {
+        1.0
+    };
+    MousePosition {
+        x: origin_x + POINTER_LEAVE_CSS_OFFSET * scale,
+        y: origin_y + POINTER_LEAVE_CSS_OFFSET * scale,
+        member_id: None,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct MouseButton {
@@ -145,12 +157,21 @@ impl InputMonitor {
         self.state.status()
     }
 
-    /// Ask the polling loop to report the next pointer sample even when its
-    /// coordinates did not change. XWayland freezes the pointer position while
-    /// it is outside the shaped input region, so without this a re-entry at the
-    /// same pixel as the leave point would not end the cleared hover state.
-    pub fn request_pointer_resync(&self) {
+    /// The pointer entered the shaped input region. Ask the polling loop to
+    /// report the next sample even when its coordinates did not change:
+    /// XWayland freezes the pointer position while it is outside the region, so
+    /// a re-entry at the same pixel as the leave point would otherwise not end
+    /// the cleared hover state.
+    pub fn mark_pointer_entered(&self) {
         self.state.pointer_resync.store(true, Ordering::Release);
+    }
+
+    /// The pointer left the shaped input region. Cancel a pending forced
+    /// resync: when an enter is immediately followed by a leave, the forced
+    /// report would replay XWayland's frozen last-inside position and re-open
+    /// the hover that the leave handler has just cleared.
+    pub fn mark_pointer_left(&self) {
+        self.state.pointer_resync.store(false, Ordering::Release);
     }
 
     pub fn start(&self, app: AppHandle) -> Result<InputStatus, String> {
@@ -838,28 +859,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pointer_leave_payload_is_outside_hit_regions() {
-        let payload =
-            serde_json::to_value(POINTER_LEAVE_POSITION).expect("serialize leave payload");
-        assert_eq!(payload, serde_json::json!({ "x": -1.0, "y": -1.0 }));
-        assert!(payload.get("memberId").is_none());
-        assert!(!crate::geometry::HitRegion {
-            left: 0.0,
-            top: 0.0,
-            width: 100.0,
-            height: 100.0,
-            member_id: None,
+    fn pointer_leave_payload_maps_outside_the_viewport() {
+        for (origin_x, origin_y, scale) in
+            [(0.0, 0.0, 1.0), (2560.0, 0.0, 1.5), (-3840.0, -120.0, 1.25)]
+        {
+            let payload = pointer_leave_position(origin_x, origin_y, scale);
+            let css_x = (payload.x - origin_x) / scale;
+            let css_y = (payload.y - origin_y) / scale;
+            assert!(
+                (css_x - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_x}/{scale}"
+            );
+            assert!(
+                (css_y - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_y}/{scale}"
+            );
+            assert!(css_x < 0.0 && css_y < 0.0);
+            assert!(payload.member_id.is_none());
         }
-        .contains(-1.0, -1.0));
+        let serialized =
+            serde_json::to_value(pointer_leave_position(0.0, 0.0, 1.0)).expect("serialize leave");
+        assert!(serialized.get("memberId").is_none());
     }
 
     #[test]
-    fn pointer_resync_is_consumed_once() {
+    fn pointer_leave_payload_survives_a_stale_window_origin() {
+        // The official frontend caches innerPosition/scale; a leave right after
+        // a monitor switch may still be converted with the previous origin.
+        let scale = 1.5;
+        let payload = pointer_leave_position(2560.0, 0.0, scale);
+        for stale_origin_x in [-5120.0, -2560.0, 0.0, 2560.0, 5120.0] {
+            assert!(
+                (payload.x - stale_origin_x) / scale < 0.0,
+                "{stale_origin_x}"
+            );
+            assert!((payload.y - 0.0) / scale < 0.0);
+        }
+    }
+
+    #[test]
+    fn pointer_leave_cancels_a_pending_resync() {
         let monitor = InputMonitor::new();
         assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
-        monitor.request_pointer_resync();
+        monitor.mark_pointer_entered();
         assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
-        assert!(!monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
+        monitor.mark_pointer_entered();
+        monitor.mark_pointer_left();
+        assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+        monitor.mark_pointer_entered();
+        assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
     }
 
     #[test]
