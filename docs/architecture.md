@@ -107,6 +107,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 2. `socket.rs` 用 `tokio-tungstenite` 建立连接，通过 Tauri Channel 推送 `open` / `text` / `binary` / `error` / `close`。
 3. `native_ws_send` / `native_ws_close` 负责发送与清理；窗口刷新或销毁时关闭该窗口的全部连接。
 4. 不转发任意请求头、Cookie 或 Origin，避免把代理变成通用网络出口。
+5. 原生 TLS 使用 rustls，启动时显式安装 `ring` provider；`tokio-tungstenite` 本身不会自动选择 crypto provider，缺少这一步会让每次 WebSocket 建连在构造 TLS 配置时 panic。rustls 关闭默认 feature 以避开 `aws-lc-rs`，因此必须保留 `tls12` feature：官方 endpoint 只协商 TLS 1.2，只提供 TLS 1.3 会被服务端用 `protocol_version` alert 拒绝。
 
 ## 计数与日志
 
