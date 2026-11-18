@@ -58,14 +58,57 @@ test('login tokens survive when WebKitGTK rejects tauri:// cookies', () => {
   assert.throws(() => patchCookieStorage('getCookie=e=>{}'), /cookie helpers changed/);
 });
 
+const CHEST_SOURCE = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;const e=fs(),t=performance.now()}function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
+
 test('chest timers are not blocked by activity config readiness', () => {
-  const source = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;const e=fs(),t=performance.now()}function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
-  const patched = patchChestTimers(source);
+  const patched = patchChestTimers(CHEST_SOURCE);
   assert.ok(patched.includes('eo.value=!0;'));
   assert.ok(!patched.includes('if(!eo.value)return;'));
-  assert.ok(patched.includes('!!(A.isLoggedIn&&Cr.value||La.value&&e)'));
+  assert.ok(patched.includes('!!(A.isLoggedIn&&(Cr.value||La.value&&(e||P.value)))'));
   assert.ok(patched.includes('const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:'));
   assert.throws(() => patchChestTimers('function Un(){if(!eo.value)return;}'), /Chest timer or visibility/);
+});
+
+test('chest panes keep official hover and the port always-show behaviour', () => {
+  const patched = patchChestTimers(CHEST_SOURCE);
+  const snippet = patched.slice(patched.indexOf('function Qr(e)'));
+  const ref = value => ({ value });
+  const state = {
+    A: { isLoggedIn: true },
+    La: ref(true),
+    Cr: ref(false),
+    P: ref(false),
+    Vn: ref(false),
+    Wn: ref(false),
+    Jr: ref(null),
+    pe: compute => ({ get value() { return compute(); } }),
+  };
+  vm.runInNewContext(
+    `${snippet};globalThis.panes=()=>[Zr.value,ei.value];`,
+    state,
+  );
+  const set = values => {
+    for (const [key, value] of Object.entries(values)) {
+      if (key === 'isLoggedIn') state.A.isLoggedIn = value;
+      else state[key].value = value;
+    }
+    return [...state.panes()];
+  };
+
+  // Official behaviour: hovering the pet reveals both countdown panes.
+  assert.deepEqual(set({ P: true }), [true, true]);
+  assert.deepEqual(set({ P: false }), [false, false]);
+  // A ready chest stays visible without hover.
+  assert.deepEqual(set({ Vn: true }), [true, false]);
+  // The "always show chest" setting bypasses the click-balance gate.
+  assert.deepEqual(set({ Cr: true, La: false, Vn: false, Wn: false }), [true, true]);
+  // The balance gate still hides hover panes when the setting is off.
+  assert.deepEqual(set({ Cr: false, La: false, P: true }), [false, false]);
+  // Below 2000 clicks the official view shows only the affordable side.
+  assert.deepEqual(set({ Jr: 'right', La: true, Vn: true, Wn: true }), [false, true]);
+  assert.deepEqual(set({ Jr: 'left', La: true, Vn: true, Wn: true }), [true, false]);
+  // Logged-out sessions keep the port's hidden state.
+  assert.deepEqual(set({ isLoggedIn: false, Cr: true, La: true, Vn: true, Wn: true }), [false, false]);
 });
 
 test('relaunch goes through the native restart command', () => {
