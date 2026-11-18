@@ -39,6 +39,13 @@ export function patchCookieStorage(source) {
 // an already-hydrated session, leaving that flag false and both chest buttons
 // permanently disabled. The timers themselves already fall back to Date.now(),
 // so mark readiness when the view first computes them.
+//
+// The visibility rewrite keeps the official hover behaviour (the pointer
+// hovering the pet shows both countdown panes) and the port's always-show
+// behaviour (the setting bypasses the 1000-click gate and shows both panes).
+// `P` is the official hover flag fed by `mouse-move`; when the native layer
+// reports the pointer leaving the pet it sends an out-of-region position, so
+// the panes hide again just like on Windows.
 export function patchChestTimers(source) {
   const timer = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;';
   const visibility = 'function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}';
@@ -48,7 +55,7 @@ export function patchChestTimers(source) {
   }
   return source
     .replace(timer, 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}eo.value=!0;')
-    .replace(visibility, 'function Qr(e){return !!(A.isLoggedIn&&Cr.value||La.value&&e)}')
+    .replace(visibility, 'function Qr(e){return !!(A.isLoggedIn&&(Cr.value||La.value&&(e||P.value)))}')
     .replace(panes, 'const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));');
 }
 

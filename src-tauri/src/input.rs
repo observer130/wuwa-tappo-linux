@@ -30,6 +30,18 @@ pub struct MousePosition {
     pub member_id: Option<u64>,
 }
 
+/// Payload sent when the pointer leaves the pet. XWayland stops reporting
+/// global pointer coordinates once the pointer leaves the shaped input region
+/// on Wayland, so the polling loop cannot emit the move that ends a hover. The
+/// GTK leave handler sends this position outside every hit region instead; the
+/// official frontend's hover test (`jc`) then clears its state exactly as it
+/// would for a real move to an empty part of the overlay.
+pub const POINTER_LEAVE_POSITION: MousePosition = MousePosition {
+    x: -1.0,
+    y: -1.0,
+    member_id: None,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct MouseButton {
     button: &'static str,
@@ -45,6 +57,7 @@ struct MonitorState {
     running: AtomicBool,
     granted: AtomicBool,
     stop: AtomicBool,
+    pointer_resync: AtomicBool,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
     auxiliary_hit_test: Mutex<Option<AuxiliaryHitTest>>,
@@ -95,6 +108,7 @@ impl InputMonitor {
                 running: AtomicBool::new(false),
                 granted: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
+                pointer_resync: AtomicBool::new(false),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
                 auxiliary_hit_test: Mutex::new(None),
@@ -129,6 +143,14 @@ impl InputMonitor {
 
     pub fn status(&self) -> InputStatus {
         self.state.status()
+    }
+
+    /// Ask the polling loop to report the next pointer sample even when its
+    /// coordinates did not change. XWayland freezes the pointer position while
+    /// it is outside the shaped input region, so without this a re-entry at the
+    /// same pixel as the leave point would not end the cleared hover state.
+    pub fn request_pointer_resync(&self) {
+        self.state.pointer_resync.store(true, Ordering::Release);
     }
 
     pub fn start(&self, app: AppHandle) -> Result<InputStatus, String> {
@@ -787,6 +809,9 @@ fn run_monitor(
             }
         }
         // Cursor movement is polled so it also works for absolute/touchpad devices.
+        if state.pointer_resync.swap(false, Ordering::AcqRel) {
+            last_position = None;
+        }
         if last_move_emit.elapsed() >= Duration::from_millis(33) {
             if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
                 if !over_auxiliary(&app, css_x, css_y) {
@@ -811,6 +836,31 @@ fn run_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_leave_payload_is_outside_hit_regions() {
+        let payload =
+            serde_json::to_value(POINTER_LEAVE_POSITION).expect("serialize leave payload");
+        assert_eq!(payload, serde_json::json!({ "x": -1.0, "y": -1.0 }));
+        assert!(payload.get("memberId").is_none());
+        assert!(!crate::geometry::HitRegion {
+            left: 0.0,
+            top: 0.0,
+            width: 100.0,
+            height: 100.0,
+            member_id: None,
+        }
+        .contains(-1.0, -1.0));
+    }
+
+    #[test]
+    fn pointer_resync_is_consumed_once() {
+        let monitor = InputMonitor::new();
+        assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+        monitor.request_pointer_resync();
+        assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
+        assert!(!monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
+    }
 
     #[test]
     fn gamepad_buttons_stay_out_of_keyboard_and_mouse_ranges() {
@@ -864,6 +914,7 @@ mod tests {
             running: AtomicBool::new(false),
             granted: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            pointer_resync: AtomicBool::new(false),
             error: Mutex::new(Some("input_monitor_not_running".into())),
             member_resolver: Mutex::new(None),
             auxiliary_hit_test: Mutex::new(None),

@@ -1,4 +1,5 @@
 use crate::geometry::{work_area_insets, HitRegion};
+use gtk::prelude::{WidgetExt, WidgetExtManual};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -285,6 +286,48 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         }
     }
     result
+}
+
+/// The shaped X11 window still receives crossing notifications when the
+/// pointer enters or leaves the pet's input region, even on Wayland where
+/// XWayland then stops reporting global pointer coordinates to the polling
+/// thread. A leave is forwarded as an out-of-region `mouse-move` so the
+/// official frontend clears its hover state exactly as it does for a real move
+/// away from the pet; an enter asks the polling thread to report the next
+/// sample even if the pointer returns to the same pixel it left from.
+fn watch_main_pointer_crossing(app: &AppHandle) -> Result<(), String> {
+    let gtk_window = main_window(app)?.gtk_window().map_err(err)?;
+    gtk_window.add_events(
+        gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
+    );
+    let handle = app.clone();
+    gtk_window.connect_leave_notify_event(move |_, _| {
+        emit_pointer_leave(&handle);
+        gtk::glib::Propagation::Proceed
+    });
+    let handle = app.clone();
+    gtk_window.connect_enter_notify_event(move |_, _| {
+        if let Some(monitor) = handle.try_state::<crate::input::InputMonitor>() {
+            monitor.request_pointer_resync();
+        }
+        gtk::glib::Propagation::Proceed
+    });
+    Ok(())
+}
+
+/// A swallow (native click forwarding or dock drag) temporarily makes the whole
+/// window interactive. A leave then means the pointer left the window, not the
+/// pet, and feeding a synthetic position into the official drag handler would
+/// teleport the dock. Only the region-shaped state reports a pet hover leaving.
+fn emit_pointer_leave(app: &AppHandle) {
+    let swallowed = app
+        .try_state::<WindowState>()
+        .and_then(|state| state.hit.read().ok().map(|hit| hit.swallow))
+        .unwrap_or(false);
+    if swallowed {
+        return;
+    }
+    let _ = app.emit("mouse-move", crate::input::POINTER_LEAVE_POSITION);
 }
 
 fn build_window(
@@ -1186,6 +1229,9 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_millis(50));
     if let Err(error) = apply_main_input_shape(app) {
         eprintln!("Initial input shape failed: {error}");
+    }
+    if let Err(error) = watch_main_pointer_crossing(app) {
+        eprintln!("Main window hover tracking failed: {error}");
     }
     if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--inspect") {
         w.open_devtools();
