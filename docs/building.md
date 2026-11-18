@@ -133,4 +133,4 @@ npm 可设置 `npm_config_registry=https://registry.npmmirror.com`，或使用 `
 
 ## 发布
 
-发布包由本地 `npm run package` 生成（见上文构建步骤），不包含账号数据或构建机缓存。发布前运行 `npm test` 与 `npm run test:rust`。
+发布包由本地 `npm run package` 生成（见上文构建步骤），不包含账号数据或构建机缓存。发布前运行 `npm test` 与 `npm run test:rust`。分支策略、版本号位置与 Release Notes 格式见仓库根目录 `AGENTS.md`。

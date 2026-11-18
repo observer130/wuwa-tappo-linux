@@ -23,6 +23,12 @@
 - 修改窗口、指针或命中区域时，保留物理像素与 CSS 像素之间的 XShape 边界转换，并覆盖分数缩放。
 - 不削弱日志脱敏、存储目录权限、WebSocket 来源校验等安全边界。
 
+## 开发流程
+
+- `dev` 是集成分支。功能、修复、文档、发布准备等所有改动都从最新 `dev` 拉短生命周期分支，命名 `<type>/<topic>`（`feat/`、`fix/`、`docs/`、`chore/`、`release/`）。
+- 分支完成并通过“验证”小节后，用 `git merge --no-ff <branch>` 合入 `dev`，禁止 fast-forward 合入。
+- 保留 `dev` 与 `main` 的合并提交；发布 tag 打在 `main` 的发布提交上，已推送的 tag 不移动、不重打。
+
 ## 验证
 
 提交前在仓库根目录运行：
@@ -35,6 +41,24 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 不要通过删除测试、放宽断言或跳过契约检查来让检查变绿。没有官方资源时可以用 `npm run scaffold` 做编译检查，但不能据此发布。
+
+## 发布与 Release Notes
+
+发布流程：
+
+1. 确认 `dev` 已通过发布前 review 与“验证”小节的全部检查。
+2. 从 `dev` 拉 `release/v<version>`，在同一个提交里提升版本号：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`。
+3. 按 `docs/building.md` 构建 release 二进制并运行 `npm run package`，核对 `dist/wuwa-tappo-linux-<version>-x86_64.tar.gz` 与 `.sha256`。
+4. 按下面的格式编写 `dist/RELEASE_NOTES-v<version>.md`；`dist/` 是本地构建产物，不进入 git。
+5. `release/v<version>` 以 `--no-ff` 合入 `dev`，`dev` 以 `--no-ff` 合入 `main`；在 `main` 的发布提交上创建 annotated tag `v<version>`，推送 `main` 与 tag。
+6. 使用 `gh release create v<version> <tarball> <sha256> --title "v<version>" --notes-file dist/RELEASE_NOTES-v<version>.md` 创建 GitHub Release；预发布加 `--prerelease`。
+
+Release Notes 文本结构规定如下：
+
+- 正文不加 H1，版本号由 GitHub Release 标题（`v<version>`）承载。
+- 分类固定为：新增功能、体验优化、问题修复、其他变更；没有内容的分类省略。
+- 分类标题使用 `###`；条目按影响排序，每条一句话，外部贡献者以 ` @handle` 标注。
+- tag、GitHub Release 标题（`v<version>`）与 `dist/RELEASE_NOTES-v<version>.md` 文件名保持一致。
 
 ## 文档
 
