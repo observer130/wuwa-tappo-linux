@@ -78,6 +78,11 @@ pub struct WindowState {
     webview_scale: RwLock<Option<f64>>,
     shape: Mutex<Option<crate::shape::InputShape>>,
     shape_last: Mutex<Option<(u8, usize)>>,
+    /// The cursor kind last commanded by the frontend. WebKitGTK re-asserts
+    /// its DOM-derived cursor on state changes and the frontend never re-sends
+    /// an unchanged kind, so the main loop re-applies this value while the
+    /// pointer is inside the shaped region.
+    desired_cursor: Mutex<Option<String>>,
 }
 
 impl WindowState {
@@ -441,6 +446,42 @@ fn set_cursor_tree(gdk_window: &gtk::gdk::Window, cursor: Option<&gtk::gdk::Curs
     gdk_window.set_cursor(cursor);
     for child in gdk_window.children() {
         set_cursor_tree(&child, cursor);
+    }
+}
+
+/// Re-apply the frontend-commanded cursor on the main window's GDK tree while
+/// the pointer is inside the shaped region. WebKitGTK recomputes its
+/// DOM-derived cursor on state changes (hover UI mounting, CSS transitions)
+/// and asserts it on the view's window, silently overwriting the tree walk
+/// done for the original command; on Windows the global hook keeps feeding
+/// moves and `SetCursor` is window-global, but on X11 the frontend's `er`
+/// latch never re-sends an unchanged kind, so native maintenance is the only
+/// writer that can win. Runs on the main GTK loop, which also keeps it
+/// working when the evdev monitor is unavailable.
+fn reassert_main_cursor(app: &AppHandle) {
+    let inside = app
+        .try_state::<crate::input::InputMonitor>()
+        .is_some_and(|monitor| monitor.pointer_inside());
+    if !inside {
+        return;
+    }
+    let Some(state) = app.try_state::<WindowState>() else {
+        return;
+    };
+    let Some(kind) = state
+        .desired_cursor
+        .lock()
+        .ok()
+        .and_then(|desired| desired.clone())
+    else {
+        return;
+    };
+    if let Err(error) = set_native_cursor(app, &kind) {
+        let _ = crate::system::write_message(
+            app,
+            "warn",
+            &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
+        );
     }
 }
 
@@ -1262,6 +1303,9 @@ pub fn dispatch(
                 return Err("Unsupported cursor".into());
             }
             set_native_cursor(app, kind)?;
+            if let Ok(mut desired) = state.desired_cursor.lock() {
+                *desired = Some(kind.to_string());
+            }
         }
         "ensure_main_taskbar_icon" => {
             main_window(app)?.set_skip_taskbar(false).map_err(err)?;
@@ -1404,6 +1448,17 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                 .read()
                 .is_ok_and(|regions| regions.values().any(|region| region.contains(x, y)))
         })?;
+    // Cursor maintenance: WebKitGTK re-asserts its DOM-derived cursor on state
+    // changes and the frontend never re-sends an unchanged kind (its `er`
+    // latch), so the commanded cursor is re-applied on every tick while the
+    // pointer is inside the shaped region.
+    {
+        let handle = app.clone();
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+            reassert_main_cursor(&handle);
+            gtk::glib::ControlFlow::Continue
+        });
+    }
     Ok(())
 }
 

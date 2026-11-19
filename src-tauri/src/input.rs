@@ -1039,14 +1039,19 @@ fn run_monitor(
             // Outside the shaped input region XWayland reports the frozen
             // last-inside coordinate while the pointer travels over native
             // Wayland surfaces, and stays live while it is over other X
-            // windows. A frozen sample must never drive hover or drag: the GDK
-            // leave already emitted one out-of-region sentinel that closed
-            // the hover, and nothing else is sent until a change proves the
-            // sample live. The frozen quiet also keeps the frontend's idle
-            // semantics intact (auto-hide can time out).
+            // windows. Neither sample may reach the official frontend as a
+            // mouse move: the frozen one is not the true position, and a live
+            // one taken over another window still hit-tests against THIS
+            // window's CSS coordinates, so it re-lights the pet hover when
+            // that window overlaps the pet rect. The GDK leave already
+            // emitted one out-of-region sentinel that closed the hover, a
+            // press outside re-sends its own sentinel, and the auto-hide
+            // unhide path is likewise driven by the leave sentinel — nothing
+            // else is emitted until a crossing or a rebuilt shape proves a
+            // re-entry.
             if last_move_emit.elapsed() >= Duration::from_millis(33) {
                 last_move_emit = Instant::now();
-                if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
+                if let Some((_position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
                     if over_auxiliary(&app, css_x, css_y) {
                         last_position = None;
                     } else if update_reenter_proof(&state, &app, css_x, css_y) {
@@ -1064,20 +1069,6 @@ fn run_monitor(
                             "info",
                             "[POINTER] re-entered hit region without motion",
                         );
-                    } else if let Some((last_x, last_y)) = last_position {
-                        if (last_x - position.x).abs() > 0.01 || (last_y - position.y).abs() > 0.01
-                        {
-                            // The sample is live: the pointer travels over
-                            // another X window. Report the true position like
-                            // the official global hook would.
-                            last_position = Some((position.x, position.y));
-                            app.state::<InputMonitor>()
-                                .emit_pointer_move(&app, position);
-                        }
-                    } else {
-                        // First sample after a leave proves nothing about
-                        // liveness; record it without emitting.
-                        last_position = Some((position.x, position.y));
                     }
                 }
             }
