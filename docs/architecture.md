@@ -33,7 +33,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 3. `setup` 创建 `CounterStore`，初始化系统托盘/Dock 菜单与网络监视器。托盘不可用时菜单功能降级，关闭主窗口会直接退出。
 4. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
 5. 启动输入监听线程；若当前用户不在 `input` 组，`get_input_status` 会返回失败，前端显示提示。
-6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外由 XWayland/KWin 直接穿透，不再轮询光标，避免 Wayland 下 X11 指针坐标冻结的问题。
+6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外的点击由 XWayland/KWin 直接穿透；输入线程只在指针可证实位于区域内、或坐标可证实为实时时上报 `mouse-move`，避免 Wayland 下 X11 指针坐标冻结驱动悬停（见「指针穿透与悬停」）。
 7. `get_main_desktop_safe_area` 通过 EWMH (`_NET_ACTIVE_WINDOW`、`_NET_WM_STATE_FULLSCREEN`、dock 窗口) 返回前台全屏状态、`foregroundApplicationFullscreen` 和 `autoHideEdge`，与官方用于自动游戏模式/任务栏避让的字段保持一致。
 
 `main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口关闭时，如果托盘创建成功则隐藏到托盘；托盘菜单的“退出”会走前端 `quitApp` 的保存计数/断开 Socket 流程。托盘不可用或创建失败时关闭主窗口直接退出，避免留下无法唤出的后台进程和单实例锁。`F9` 在窗口隐藏到托盘时也会恢复窗口。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
@@ -60,7 +60,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
   - `regions`：需要接收鼠标的区域。
   - `input_regions`：联机时带 `memberId` 的角色命中区域。
   - `window_passthrough`：整窗穿透开关。
-- 原生后端把 `regions` / `input_regions` 的并集通过 XShape 设为 `ShapeInput`；`set_main_swallow_mouse(true)` 时临时扩成全窗口，`set_main_force_cursor_ignore(true)` 时清空。
+- 原生后端把 `regions` / `input_regions` 的并集通过 XShape 设为 `ShapeInput`；`set_main_swallow_mouse(true)` 时临时扩成全窗口，`set_main_force_cursor_ignore(true)` 只记账、不清空区域（见「指针穿透与悬停」）。
 - 辅助窗口的 `HitRegion` 以全局 CSS 坐标保存，原生鼠标事件落在面板/关于窗口上时不再转发给主窗口。
 - 主窗口、面板、登录、关于、OSS 声明等窗口统一使用透明原生表面；官方路由本身是圆角卡片，否则窗口默认白底会在圆角外露出矩形白边。
 
@@ -86,7 +86,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
   - `EV_KEY value=2` 是自动重复，不产生 `key-release`；只有真实松手才结束按键。
   - 模拟扳机（`ABS_Z`/`ABS_RZ`，兼容 `ABS_GAS`/`ABS_BRAKE`）超过轴范围中点时发一次 `gamepad-button-press`，松手不发 release。
 - 指针位置通过独立的 XCB 连接查询 X11 根窗口，避免 Tao/GDK 在后台线程返回启动时的缓存坐标。输入区域生效后，指针位于桌宠上时 XWayland 会持续更新该坐标。
-- 鼠标移动以 33 ms 节流轮询：`pointer_inside`（指针位于主窗口输入区域）为真时上报实时采样；区域外改为每 100 ms 发送一次区域外哨兵心跳，既不让 Wayland 下 XWayland 的冻结位置驱动悬停/拖动，也保证官方前端仍能收到鼠标事件来重算命中区域。swallow（拖动/点击转发）期间即使指针离开普通命中区域也使用实时坐标。
+- 鼠标移动以 33 ms 节流轮询：`pointer_inside`（指针位于主窗口输入区域，由 GDK enter/leave 通知维护）为真时上报实时采样；区域外不再发送心跳，只有采样与上一次不同（可证实指针在其他 X 窗口上、坐标为实时）时才按真坐标上报，首个区域外采样只记录不发送。自最近一次 leave 起没有指针运动、且采样落回当前生效命中区域内时，自动恢复 `pointer_inside`（KWin 在区域重新盖住静止指针时不会重发 enter）。swallow（拖动/点击转发）期间即使指针离开普通命中区域也使用实时坐标。
 - 按键去重、鼠标按下状态与手柄按住状态由后端维护，避免重复计数。
 - 需要 `input` 组读权限；失败时前端显示可恢复提示，并提供 `resume_input_monitor`。
 
@@ -134,7 +134,15 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 `patchChestTimers` 在首次计算宝箱状态时直接标记就绪；计时仍优先使用官方 `server_time`，拿不到时回退到本地 `Date.now()`。可见性保持官方规则：加载态与点击余额 ≥2000 时，悬停桌宠显示左右两个倒计时；余额 1000~2000 时按官方单侧显示；余额 <1000 且配置就绪时悬停不显示；宝箱可领取时无需悬停即显示彩色按钮，领取后显示倒计时。未登录时会和官方一样显示两个宝箱按钮，点击进入登录流程。移植版的“总是展示宝箱”在已登录时绕过余额门槛并同时显示左右两个宝箱；领取仍受官方 `totalClickCount` 校验。
 
-XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWayland 不再提供全局指针坐标。主窗口控件层级的 `enter-notify-event`/`leave-notify-event` 维护输入线程的 `pointer_inside` 状态：区域外冻结采样不参与悬停判定，改为每 100 ms 发送一次按窗口原点/缩放计算的区域外哨兵 `mouse-move`（保活前端事件流，避免命中区域同步停滞），悬停判定（`jc`）因此会像 Windows 一样清除；区域外的鼠标按键仍上报点击计数，但只携带区域外哨兵坐标，不会命中桌宠、宝箱或触发拖动。`set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态，原生在 600 ms 内没有收到新的命中区域同步时会自动清除它并重建输入区域，避免拖拽到屏幕边缘后窗口永久不可交互。`enter-notify-event` 会让轮询线程重新上报一次位置，指针回到离开时的同一像素也能重新触发悬停。窗口吞鼠标/拖动（swallow）期间使用实时坐标且不转发合成离开，避免影响拖拽；纯 X11 会话下坐标本身不会冻结，但同样按 `pointer_inside` 门控上报。
+### 指针穿透与悬停
+
+XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWayland 不再提供全局指针坐标：采样冻结在离开时的最后位置。官方 Windows 前端依赖系统级钩子持续获得真坐标，Linux 上没有等价数据源，原生层按下列规则补偿：
+
+- 主窗口控件层级的 `enter-notify-event` / `leave-notify-event` 维护输入线程的 `pointer_inside`。leave 时向官方前端发送一次携带冻结坐标的哨兵 `mouse-move`，让悬停判定（`jc`）像 Windows 一样清除；此后冻结采样不再驱动悬停/光标，官方自动隐藏计时也因此可以正常下陷。
+- 区域外的鼠标按键仍上报点击计数，但被 `pointer_inside` 门控拦截，不会命中桌宠、宝箱或触发拖动。区域外采样只有可证实实时（指针落在其他 X 窗口上、坐标在变化）时才转发真坐标，否则不发送。
+- KWin 的输入区域事件不对称：区域从静止指针下方移除会触发 leave，区域重新盖住静止指针不会触发 enter。输入线程用 evdev 运动计数补偿——自最近一次 leave 起没有指针运动时，冻结采样即真实位置；XQueryPointer 采样若落回当前生效的命中区域内，自动恢复 `pointer_inside` 并重新上报一次位置，指针停在原处也能重新触发悬停。任何真实指针运动都会使该证明失效，直到下一次 leave 重新建立。
+- `set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态（启动、拖拽结束）。Windows 原版此时清空命中区域，靠全局钩子的真坐标流驱动下一次交互；Linux 上清空会让 KWin 发出 leave、把静止指针的 `pointer_inside` 卡死在 false（区域恢复也不会产生 enter），交互永不恢复。因此原生层对该状态只记账、不清空 XShape：拖拽结束后命中区域保持原样，指针未离开窗口时 `pointer_inside` 全程为真，下一次按键照常经 `set_main_swallow_mouse` 恢复交互。与 Windows 的差别是拖拽后指针静止时，点击宠物区域会被本应用窗口消费而不是落透到桌面；官方前端对两种来源的响应一致，用户感知相同。
+- swallow（拖动/点击转发）期间使用实时坐标且不转发合成离开，避免影响拖拽；纯 X11 会话下坐标本身不会冻结，但同样按 `pointer_inside` 门控上报。
 
 ### 登录态存储
 

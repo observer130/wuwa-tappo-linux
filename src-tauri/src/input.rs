@@ -7,7 +7,7 @@ use std::{
     os::fd::AsRawFd,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -71,11 +71,22 @@ struct MonitorState {
     stop: AtomicBool,
     pointer_resync: AtomicBool,
     pointer_inside: AtomicBool,
+    /// Bumped for every evdev pointer motion (relative or absolute).
+    pointer_motion_epoch: AtomicU64,
+    /// The motion epoch at the last GDK leave. While it equals
+    /// `pointer_motion_epoch` the pointer has not moved since that leave, so
+    /// XWayland's frozen sample still equals the true position.
+    pointer_leave_motion_epoch: AtomicU64,
     pointer_emit_lock: Mutex<()>,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
     auxiliary_hit_test: Mutex<Option<AuxiliaryHitTest>>,
 }
+
+/// Sentinel for "no GDK leave has been processed yet". Until the first leave,
+/// XWayland's reported position can be stale from before the window mapped,
+/// so the region re-enter check must not trust it.
+const POINTER_LEAVE_EPOCH_UNSET: u64 = u64::MAX;
 
 impl MonitorState {
     fn error(&self, message: String) {
@@ -124,6 +135,8 @@ impl InputMonitor {
                 stop: AtomicBool::new(false),
                 pointer_resync: AtomicBool::new(false),
                 pointer_inside: AtomicBool::new(false),
+                pointer_motion_epoch: AtomicU64::new(0),
+                pointer_leave_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
                 pointer_emit_lock: Mutex::new(()),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
@@ -186,6 +199,13 @@ impl InputMonitor {
     pub fn mark_pointer_left(&self) {
         self.state.pointer_inside.store(false, Ordering::Release);
         self.state.pointer_resync.store(false, Ordering::Release);
+        // Snapshot the motion counter. While it stays unchanged the pointer
+        // has not moved since this leave, so XWayland's frozen sample equals
+        // the true position and can prove a later region re-entry.
+        self.state.pointer_leave_motion_epoch.store(
+            self.state.pointer_motion_epoch.load(Ordering::Acquire),
+            Ordering::Release,
+        );
     }
 
     /// Emit a pointer move. Serialized with the leave sentinel and button
@@ -316,7 +336,12 @@ struct PollFd {
 
 const EV_KEY: u16 = 1;
 const EV_SYN: u16 = 0;
+const EV_REL: u16 = 2;
 const EV_ABS: u16 = 3;
+const REL_X: u16 = 0x00;
+const REL_Y: u16 = 0x01;
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
 const ABS_Z: u16 = 0x02;
 const ABS_RZ: u16 = 0x05;
 const ABS_GAS: u16 = 0x09;
@@ -671,6 +696,28 @@ fn button_targets_ui(pointer_inside: bool, swallow: bool) -> bool {
     pointer_inside || swallow
 }
 
+/// Whether the "no pointer motion since the leave" proof holds and the sample
+/// lands inside the current input shape. KWin only re-evaluates a window's
+/// pointer focus when the pointer physically moves, so a region that appears
+/// around a stationary pointer never generates EnterNotify; the polling loop
+/// uses this to re-arm the inside state instead.
+fn pointer_reenter_is_proven(
+    state: &MonitorState,
+    app: &AppHandle,
+    css_x: f64,
+    css_y: f64,
+) -> bool {
+    pointer_reenter_proven(
+        state.pointer_motion_epoch.load(Ordering::Acquire),
+        state.pointer_leave_motion_epoch.load(Ordering::Acquire),
+        crate::windows::main_shape_covers(app, css_x, css_y),
+    )
+}
+
+fn pointer_reenter_proven(motion_epoch: u64, leave_motion_epoch: u64, covered: bool) -> bool {
+    leave_motion_epoch != POINTER_LEAVE_EPOCH_UNSET && motion_epoch == leave_motion_epoch && covered
+}
+
 /// The official frontend keeps the shortcut table in the native layer. The same
 /// evdev stream that counts key presses therefore also drives `app-shortcut`.
 fn dispatch_shortcut(
@@ -777,7 +824,24 @@ fn run_monitor(
                     if event.type_ == EV_SYN {
                         continue;
                     }
+                    if event.type_ == EV_REL {
+                        // Any pointer motion invalidates the "frozen sample is
+                        // still true" assumption behind the region re-enter
+                        // check, so every relative packet bumps the epoch.
+                        if matches!(event.code, REL_X | REL_Y) {
+                            state.pointer_motion_epoch.fetch_add(1, Ordering::AcqRel);
+                        }
+                        continue;
+                    }
                     if event.type_ == EV_ABS {
+                        // Absolute pointer devices (touchscreens, tablets)
+                        // report position as ABS_X/ABS_Y. Gamepad left sticks
+                        // reuse the same codes; a stray bump only suppresses
+                        // the re-enter check, which is the safe direction.
+                        if matches!(event.code, ABS_X | ABS_Y) {
+                            state.pointer_motion_epoch.fetch_add(1, Ordering::AcqRel);
+                            continue;
+                        }
                         if let Some(axis) = hat_axis(event.code) {
                             let device = &mut devices[index];
                             device.hat[axis] = event.value;
@@ -918,19 +982,49 @@ fn run_monitor(
             last_position = None;
         }
         if !state.pointer_inside.load(Ordering::Acquire) && !pointer_swallow_active(&app) {
-            // Outside the shaped input region XWayland only reports the frozen
-            // last-inside coordinate. Never let it drive hover or drag, but keep
-            // a low-rate out-of-region heartbeat: the official frontend also
-            // relies on mouse moves to re-sync its hit regions, and without any
-            // events a transient passthrough state can keep the window
-            // click-through forever after a drag. Swallow (drag / click
-            // forwarding) keeps live coordinates so an edge drag cannot be
-            // teleported by the sentinel.
-            last_position = None;
-            if last_move_emit.elapsed() >= Duration::from_millis(100) {
+            // Outside the shaped input region XWayland reports the frozen
+            // last-inside coordinate while the pointer travels over native
+            // Wayland surfaces, and stays live while it is over other X
+            // windows. A frozen sample must never drive hover or drag: the GDK
+            // leave already emitted one out-of-region sentinel that closed
+            // the hover, and nothing else is sent until a change proves the
+            // sample live. The frozen quiet also keeps the frontend's idle
+            // semantics intact (auto-hide can time out).
+            if last_move_emit.elapsed() >= Duration::from_millis(33) {
                 last_move_emit = Instant::now();
-                let payload = pointer_leave_payload(&app);
-                app.state::<InputMonitor>().emit_pointer_move(&app, payload);
+                if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
+                    if over_auxiliary(&app, css_x, css_y) {
+                        last_position = None;
+                    } else if pointer_reenter_is_proven(&state, &app, css_x, css_y) {
+                        // No motion since the leave, so the frozen sample is
+                        // the true position, and it lands on the current
+                        // shape: the pointer never actually left the pet.
+                        // Re-arm the inside state (resync forces the next
+                        // sample out) because KWin will not.
+                        state.pointer_inside.store(true, Ordering::Release);
+                        state.pointer_resync.store(true, Ordering::Release);
+                        last_position = None;
+                        let _ = crate::system::write_message(
+                            &app,
+                            "info",
+                            "[POINTER] re-entered hit region without motion",
+                        );
+                    } else if let Some((last_x, last_y)) = last_position {
+                        if (last_x - position.x).abs() > 0.01 || (last_y - position.y).abs() > 0.01
+                        {
+                            // The sample is live: the pointer travels over
+                            // another X window. Report the true position like
+                            // the official global hook would.
+                            last_position = Some((position.x, position.y));
+                            app.state::<InputMonitor>()
+                                .emit_pointer_move(&app, position);
+                        }
+                    } else {
+                        // First sample after a leave proves nothing about
+                        // liveness; record it without emitting.
+                        last_position = Some((position.x, position.y));
+                    }
+                }
             }
         } else if last_move_emit.elapsed() >= Duration::from_millis(33) {
             if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
@@ -1022,6 +1116,65 @@ mod tests {
     }
 
     #[test]
+    fn mark_pointer_left_snapshots_the_motion_epoch() {
+        let monitor = InputMonitor::new();
+        assert_eq!(
+            monitor
+                .state
+                .pointer_leave_motion_epoch
+                .load(Ordering::Acquire),
+            POINTER_LEAVE_EPOCH_UNSET
+        );
+        monitor
+            .state
+            .pointer_motion_epoch
+            .store(3, Ordering::Release);
+        monitor.mark_pointer_left();
+        assert_eq!(
+            monitor
+                .state
+                .pointer_leave_motion_epoch
+                .load(Ordering::Acquire),
+            3
+        );
+        // No motion since the leave: the frozen sample equals the true
+        // position, so a sample inside the current shape re-enters.
+        assert!(pointer_reenter_proven(
+            monitor.state.pointer_motion_epoch.load(Ordering::Acquire),
+            monitor
+                .state
+                .pointer_leave_motion_epoch
+                .load(Ordering::Acquire),
+            true
+        ));
+        // The next pointer motion breaks the proof until the next leave.
+        monitor
+            .state
+            .pointer_motion_epoch
+            .fetch_add(1, Ordering::AcqRel);
+        assert!(!pointer_reenter_proven(
+            monitor.state.pointer_motion_epoch.load(Ordering::Acquire),
+            monitor
+                .state
+                .pointer_leave_motion_epoch
+                .load(Ordering::Acquire),
+            true
+        ));
+    }
+
+    #[test]
+    fn pointer_reenter_requires_a_leave_and_coverage() {
+        // Before any leave the sentinel epoch blocks the check: a boot-time
+        // frozen sample may predate the window and must not re-arm inside.
+        assert!(!pointer_reenter_proven(0, POINTER_LEAVE_EPOCH_UNSET, true));
+        assert!(!pointer_reenter_proven(0, 0, false));
+        assert!(pointer_reenter_proven(0, 0, true));
+        // Motion after the leave: the sample may be stale, so only a real
+        // crossing event may re-arm the inside state.
+        assert!(!pointer_reenter_proven(1, 0, true));
+    }
+
+    #[test]
     fn gamepad_buttons_stay_out_of_keyboard_and_mouse_ranges() {
         for code in [0x120, 0x12b, 0x130, 0x13f, 0x220, 0x223, 0x2c0, 0x2e7] {
             assert!(is_gamepad_button(code), "expected gamepad button {code}");
@@ -1075,6 +1228,8 @@ mod tests {
             stop: AtomicBool::new(false),
             pointer_resync: AtomicBool::new(false),
             pointer_inside: AtomicBool::new(false),
+            pointer_motion_epoch: AtomicU64::new(0),
+            pointer_leave_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
             pointer_emit_lock: Mutex::new(()),
             error: Mutex::new(Some("input_monitor_not_running".into())),
             member_resolver: Mutex::new(None),

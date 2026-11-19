@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Mutex, RwLock,
     },
 };
@@ -78,7 +78,6 @@ pub struct WindowState {
     webview_scale: RwLock<Option<f64>>,
     shape: Mutex<Option<crate::shape::InputShape>>,
     shape_last: Mutex<Option<(u8, usize)>>,
-    force_epoch: AtomicU64,
 }
 
 impl WindowState {
@@ -107,8 +106,15 @@ struct HitState {
     swallow: bool,
 }
 
+/// Whether the shape must drop every input rectangle. Only the monitor latch
+/// qualifies. The frontend's `set_main_force_cursor_ignore(true)` marks the
+/// fullscreen shell as passthrough and relies on its global hook stream,
+/// which reports true pointer coordinates even outside the window, to deliver
+/// the next interaction. Wayland has no equivalent stream, so the XShape
+/// region stays interactive — it is the only source of pointer truth over the
+/// pet — and the flag is kept for bookkeeping only.
 fn ignores_input(hit: &HitState) -> bool {
-    hit.force_ignore || hit.monitor_ignore
+    hit.monitor_ignore
 }
 
 fn apply_hit_update(hit: &mut HitState, update: HitUpdate) -> (usize, usize) {
@@ -300,6 +306,31 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         }
     }
     result
+}
+
+/// Whether the current main-window input shape covers the given window
+/// relative CSS coordinate. Mirrors the mode-1 branch of
+/// `apply_main_input_shape` so the input worker can detect a region that
+/// appeared around a stationary pointer — KWin generates no EnterNotify for
+/// that case.
+pub(crate) fn main_shape_covers(app: &AppHandle, css_x: f64, css_y: f64) -> bool {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return false;
+    };
+    let Ok(hit) = state.hit.read() else {
+        return false;
+    };
+    if hit.swallow || hit.monitor_ignore {
+        return false;
+    }
+    let regions = if hit.window_passthrough {
+        &hit.input_regions
+    } else {
+        &hit.regions
+    };
+    regions
+        .iter()
+        .any(|region| region.is_valid() && region.contains(css_x, css_y))
 }
 
 /// The shaped X11 window receives crossing notifications when the pointer
@@ -1005,37 +1036,19 @@ pub fn dispatch(
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or("Missing enabled state")?;
-            state.hit.write().map_err(err)?.force_ignore = enabled;
-            if enabled {
-                // The frontend uses force-ignore as a transient passthrough
-                // (drag edge / fullscreen shell) and expects a later hit-region
-                // sync to restore input. If that sync never arrives the window
-                // would stay click-through forever, so clear a stale flag after
-                // a short grace period. A newer request bumps the epoch and wins.
-                let epoch = state.force_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                let handle = app.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(600));
-                    let restore = handle.clone();
-                    let _ = handle.run_on_main_thread(move || {
-                        let state = restore.state::<WindowState>();
-                        if state.force_epoch.load(Ordering::Acquire) != epoch {
-                            return;
-                        }
-                        let mut hit = match state.hit.write() {
-                            Ok(hit) => hit,
-                            Err(_) => return,
-                        };
-                        if !hit.force_ignore {
-                            return;
-                        }
-                        hit.force_ignore = false;
-                        drop(hit);
-                        let _ = apply_main_input_shape(&restore);
-                    });
-                });
+            // Bookkeeping only: the shape stays interactive (see
+            // `ignores_input`). A later hit-region sync clears the flag via
+            // `apply_hit_update`.
+            let changed = {
+                let mut hit = state.hit.write().map_err(err)?;
+                let changed = hit.force_ignore != enabled;
+                hit.force_ignore = enabled;
+                changed
+            };
+            if changed {
+                let message = format!("[SHAPE] force_ignore={enabled} (regions kept)");
+                let _ = crate::system::write_message(app, "info", &message);
             }
-            apply_main_input_shape(app)?;
         }
         "set_main_swallow_mouse" => {
             let enabled = args
@@ -1335,12 +1348,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn monitor_switch_ignore_is_independent_from_explicit_cursor_ignore() {
+    fn only_the_monitor_latch_ignores_input() {
         let mut hit = HitState::default();
         assert!(!ignores_input(&hit));
 
+        // The frontend's force-ignore marks the fullscreen shell passthrough
+        // but must not drop the XShape: Wayland has no global hook stream to
+        // deliver the next interaction, and dropping the shape would strand a
+        // stationary pointer (no EnterNotify around a restored region).
         hit.force_ignore = true;
-        assert!(ignores_input(&hit));
+        assert!(!ignores_input(&hit));
 
         hit.monitor_ignore = true;
         assert!(ignores_input(&hit));
