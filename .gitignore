@@ -18,6 +18,7 @@
 /.work/
 /.npm-cache/
 /.cargo-check.log
+/.xvfb-test/
 /.work-*.log
 /.work-build.log
 /.workflow/
