@@ -103,7 +103,7 @@ Wayland 只把指针事件交给有输入区域的 XWayland 窗口，指针离�
 
 拖拽结束后窗口保持可交互：官方前端的 force ignore 状态在原生层只记账、不清空输入区域。此时指针静止点击宠物区域会被本应用消费而不是落透到桌面，与 Windows 有别，但官方前端对两种来源的响应一致。
 
-悬停手形光标同时由前端命令与样式表提供：`set_native_input_cursor` 的 kind 由原生层递归设置到整棵窗口树（含 WebKit 子窗口），并在指针处于命中区域内时以 33 ms 节拍重复维护；`patchPetCursor` 补的 `.pet-dock .cat-wrap` / `.pet-dock .pet-info-container{cursor:grab}` 让 WebKitGTK 重算 DOM 光标时也得到手形，两个写入者不再互相覆盖。若桌宠上光标仍为箭头，多为当前光标主题缺少 `grab`（原生会按 `closed-hand`、`hand2` 别名回退）；若移动时手形与箭头反复切换，说明前端资源未经过本轮样式补丁（重新 `npm run prepare:frontend` 构建）；仍异常时请附带 app.log 与桌面环境信息反馈。
+桌宠光标由前端命令与样式表共同提供：`set_native_input_cursor` 的 kind 由原生层递归设置到整棵窗口树（含 WebKit 子窗口），同时镜像进样式表属性 `--wuwa-pet-cursor`，`.pet-dock` 子树按该属性解析光标，两个写入者因此同值、移动时不会闪烁。拖拽启用时桌宠上是手形，勾选「禁用移动」后是普通箭头（与官方前端判定一致），宝箱按钮上是手形结点。若桌宠上始终是箭头而非手形，多为当前光标主题缺少 `grab`（原生会按 `closed-hand`、`hand2` 别名回退），或前端资源未经过本轮样式补丁（重新 `npm run prepare:frontend` 构建）；若移动时光标仍来回切换，请附带 app.log 与桌面环境信息反馈。
 
 游戏模式等导致主窗口输入区域为空或只包含宝箱按钮时，悬停不会触发宝箱倒计时（Windows 原生可以），这是平台的已知降级。需要悬停显示计时请关闭游戏模式，或把指针移回桌宠上。
 

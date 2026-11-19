@@ -125,30 +125,38 @@ export function patchIndexLanguage(index) {
 // WebKitGTK resolves the DOM cursor for the element under the pointer and
 // applies it to the WebKit child window whenever the pointer moves. The dock
 // pet has no cursor rule of its own, so WebKit keeps stamping the default arrow
-// over the hand cursor the official frontend requests with
+// over the cursor the official frontend commands with
 // `set_native_input_cursor` (on Windows that is a process-wide SetCursor, so
-// nothing overwrites it there). Declaring the same hand cursor in CSS makes the
-// two writers agree, which stops the pet from flickering between an arrow and
-// a hand while the pointer travels across it. `.pet-dock` scopes the rule to
-// the docked pet; chest buttons keep their own `cursor: pointer` rules.
-export const PET_GRAB_CURSOR_MARKER = '/* wuwatappo-linux: hand cursor over the dock pet */';
-export const PET_GRAB_ANCHORS = [
+// nothing overwrites it there). WebKitGTK instead re-derives the cursor from
+// CSS for whichever element sits under the pointer, so the two writers used to
+// disagree once the frontend's latched kind stopped matching the hit element:
+// the pet flickered between an arrow and a hand. The official frontend already
+// decides the right kind for every position (hand while dragging is enabled,
+// arrow once dragging is disabled, pointer over the chest), and it announces
+// each change through that command. Mirroring the command into a custom
+// property makes WebKitGTK compute exactly the same kind, so both writers agree
+// and nothing alternates.
+export const PET_CURSOR_MARKER = '/* wuwatappo-linux: dock pet cursor follows the frontend command */';
+export const PET_CURSOR_ANCHORS = [
   '.cat-wrap{position:relative;width:var(--pet-base-size, 200px);height:var(--pet-base-size, 200px)}',
   '.pet-info-container{position:relative;width:180px;height:32px;margin-top:-21px;z-index:1;display:flex;flex-direction:row;align-items:center;justify-content:flex-end;align-self:flex-end;filter:drop-shadow(0px 2px 2px rgba(0,0,0,.2))}',
 ];
 
 export function patchPetCursor(source) {
-  for (const anchor of PET_GRAB_ANCHORS) {
+  for (const anchor of PET_CURSOR_ANCHORS) {
     if (source.split(anchor).length !== 2) {
       throw new Error(`Original dock pet stylesheet rule changed (${anchor.slice(0, 24)}); reconcile the Linux pet cursor fix before building.`);
     }
   }
-  if (source.includes(PET_GRAB_CURSOR_MARKER)) {
+  if (source.includes(PET_CURSOR_MARKER)) {
     throw new Error('Dock pet stylesheet is already patched; build from the pristine official frontend.');
   }
   const trimmed = source.trimEnd();
   if (!trimmed.endsWith('}')) {
     throw new Error('Original dock pet stylesheet does not end with a rule; reconcile the Linux pet cursor fix before building.');
   }
-  return `${trimmed}\n${PET_GRAB_CURSOR_MARKER}\n.pet-dock .cat-wrap,.pet-dock .pet-info-container{cursor:grab}\n`;
+  // The rule spans the whole dock pet subtree because the native input region
+  // covers the dock padding as well; every element in it resolves to the kind
+  // the frontend last commanded, and `auto` until the first command arrives.
+  return `${trimmed}\n${PET_CURSOR_MARKER}\nhtml{--wuwa-pet-cursor:auto}\n.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}\n`;
 }

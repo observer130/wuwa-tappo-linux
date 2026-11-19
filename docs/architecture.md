@@ -122,7 +122,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
   └─ scripts/extract-assets.mjs   解析 PE + Brotli 资源表，静态提取，不执行安装包
        └─ frontend/               原始官方前端（不入库）
             └─ scripts/prepare-frontend.mjs
-                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 宝箱计时 / 关于页 / 语言 / 登录态存储 / 登录恢复重试 / 桌宠手形光标
+                 ├─ frontend-patches.mjs   SDK HTTPS / 登录就绪 / 宝箱计时 / 关于页 / 语言 / 登录态存储 / 登录恢复重试 / 桌宠光标跟随前端命令
                  └─ build/frontend/        嵌入二进制的最终前端（不入库）
 ```
 
@@ -142,15 +142,15 @@ XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWay
 - 区域外的鼠标按键仍上报点击计数，但被 `pointer_inside` 门控拦截，不会命中桌宠、宝箱或触发拖动。区域外的移动采样一律不转发：Wayland 会话下冻结采样不是真值；即使指针正停在其他 XWayland 窗口上、坐标可证实实时，该坐标仍会按本窗口 CSS 空间做命中测试，落在宠物矩形内时会点亮一次「幻影悬停」，指针停手后没有后续事件让它常驻。官方前端的悬停清除与自动隐藏唤醒分别由 leave 哨兵的窗外坐标和按键哨兵承担，任务栏贴边探测只消费几何签名，不依赖区域外的移动流。
 - KWin 的输入区域事件不对称：区域从静止指针下方移除会触发 leave，区域重新盖住静止指针不会触发 enter。输入线程用 evdev 运动计数补偿——自最近一次 leave 起没有指针运动时，冻结采样即真实位置；XQueryPointer 采样若落回当前生效的命中区域内，自动恢复 `pointer_inside` 并重新上报一次位置，指针停在原处也能重新触发悬停。任何真实指针运动都会使该证明失效，直到下一次 leave 重新建立。
 - 运动计数本身分不清「指针停到桌面上」与「区域从指针下方移走」：物理离开时 evdev 先读到离开运动，随后指针停下，纯计数判据会把冻结样本误判为仍在区域内。因此自动恢复还需要「uncovered 见证」——自本次 leave 起，采样至少有一次不被当时的生效命中区域覆盖（区域同步应用时在主线程即时判定，避免 33 ms 轮询错过毫秒级的过渡区域）。物理离开后区域静止且冻结样本始终在宠物矩形内，见证不成立，误报被永久阻断；真正的区域重建（自动隐藏收起、拖拽后区域同步）构造性地经过不覆盖瞬间，照常放行。
-- 悬停手形光标：官方前端经 `set_native_input_cursor` 下发 `default/pointer/grab/grabbing`（Windows 全局 SetCursor 语义，宠物本体 CSS 无 cursor 规则）。X11 显示的光标由指针下最深层窗口决定，只设 GTK toplevel 会被 WebKit 子窗口覆盖；原生层因此把命名光标递归设置到整棵 GDK 窗口树（含 WebKit 子窗口），并按 `default→left_ptr→arrow`、`grab→closed-hand→hand2` 等别名链回退，兼容精简的 Xvfb/旧主题环境。前端只在下发的 kind 变化时发命令（`er` 闩锁），而 WebKitGTK 会在指针移动、悬停 UI 挂载等时机重算 DOM 光标并写回子窗口；宠物本体没有 cursor 规则时重算结果就是箭头，两个写入者交替生效会让手形在移动时逐帧闪烁。因此两处同时收口：`patchPetCursor` 给 `.pet-dock .cat-wrap` / `.pet-dock .pet-info-container` 补上与官方判定一致的 `cursor: grab`（宝箱按钮等子元素保留自有的 `cursor: pointer`），使 WebKit 重算结果与前端判定同值；原生层再记录最近一次下发的 kind，在指针处于命中区域内时以 33 ms 节拍重复应用（GDK 按名字缓存光标对象，重放不会制造新资源），离开区域后停止维护，桌面光标不受影响。
+- 桌宠光标：官方前端经 `set_native_input_cursor` / `set_overlay_cursor` 下发 `default/pointer/grab/grabbing`（Windows 全局 SetCursor 语义，宠物本体 CSS 无 cursor 规则）。X11 显示的光标由指针下最深层窗口决定，只设 GTK toplevel 会被 WebKit 子窗口覆盖；原生层把命名光标递归设置到整棵 GDK 窗口树（含 WebKit 子窗口），并按 `default→left_ptr→arrow`、`grab→closed-hand→hand2` 等别名链回退，兼容精简的 Xvfb/旧主题环境。前端只在下发的 kind 变化时发命令（`er` 闩锁），而 WebKitGTK 会在指针移动、悬停 UI 挂载等时机重算 DOM 光标并写回子窗口——两个写入者不同值时，光标会逐帧在手形与箭头间闪烁。因此原生层把命令的 kind 同时镜像进样式表自定义属性 `--wuwa-pet-cursor`，由 `.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}` 让 WebKit 的重算结果与命令一致；禁用移动时前端判定为 `default`（箭头）、拖拽启用时为 `grab`（手形）、宝箱按钮上为 `pointer`，均按官方判定跟随，无需原生猜模式。原生层另外在指针处于命中区域内时以 33 ms 节拍重复应用该 kind（GDK 按名字缓存光标对象，重放不会制造新资源），并每秒重写一次样式属性，以便前端重新加载文档后恢复；离开区域后停止维护，桌面光标不受影响。
 - `set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态（启动、拖拽结束）。Windows 原版此时清空命中区域，靠全局钩子的真坐标流驱动下一次交互；Linux 上清空会让 KWin 发出 leave、把静止指针的 `pointer_inside` 卡死在 false（区域恢复也不会产生 enter），交互永不恢复。因此原生层对该状态只记账、不清空 XShape：拖拽结束后命中区域保持原样，指针未离开窗口时 `pointer_inside` 全程为真，下一次按键照常经 `set_main_swallow_mouse` 恢复交互。与 Windows 的差别是拖拽后指针静止时，点击宠物区域会被本应用窗口消费而不是落透到桌面；官方前端对两种来源的响应一致，用户感知相同。
 - swallow（拖动/点击转发）期间使用实时坐标且不转发合成离开，避免影响拖拽；纯 X11 会话下坐标本身不会冻结，但同样按 `pointer_inside` 门控上报。
 
-### 桌宠手形光标
+### 桌宠光标
 
-宠物本体的手形光标在 Windows 原版由全局 `SetCursor` 提供，前端不通过 CSS 表达。WebKitGTK 会在指针移动与悬停 UI 挂载时重算 DOM 光标并写回 WebKit 子窗口，而宠物本体没有 cursor 规则，重算结果是与前端判定相反的箭头，两个写入者交替生效时手形会逐帧闪烁。
+宠物本体的光标在 Windows 原版由全局 `SetCursor` 提供，前端不通过 CSS 表达：拖拽启用时是手形，勾选「禁用移动」后是箭头，宝箱按钮上是手形结点（`pointer`）。WebKitGTK 会在指针移动与悬停 UI 挂载时重算 DOM 光标并写回 WebKit 子窗口，而宠物本体没有 cursor 规则，重算结果恒为箭头；前端又只在 kind 变化时发命令，被 WebKit 覆盖后不会重发，两个写入者交替生效即表现为闪烁。
 
-`patchPetCursor` 在官方样式表中追加 `.pet-dock .cat-wrap,.pet-dock .pet-info-container{cursor:grab}`，让 WebKit 自己算出的光标与官方前端 `jc` 命中判定一致；宝箱按钮等带显式 `cursor` 规则的子元素保持原样。补丁以两条精确的宠物布局规则作为锚点，任一锚点缺失或样式表不以上一条规则结束时构建失败。
+`patchPetCursor` 在官方样式表中追加 `html{--wuwa-pet-cursor:auto}` 与 `.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}`，宠物子树的光标统一解析到一个自定义属性；原生层在收到前端命令时把 kind 写入该属性（`setProperty`），于是 WebKit 的重算结果与命令同值，不再与原生维护的光标冲突。未收到命令前属性为 `auto`（箭头），符合禁用移动的语义。补丁以两条精确的宠物布局规则作为锚点，任一锚点缺失或样式表不以上一条规则结束时构建失败。
 
 ### 登录态存储
 

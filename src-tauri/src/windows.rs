@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, RwLock,
     },
 };
@@ -483,6 +483,60 @@ fn reassert_main_cursor(app: &AppHandle) {
             &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
         );
     }
+}
+
+/// Apply a frontend cursor command: update the native cursor, remember the
+/// kind for the maintenance loop, and point the stylesheet at the same kind.
+fn apply_cursor_command(app: &AppHandle, kind: &str) -> Result<(), String> {
+    set_native_cursor(app, kind)?;
+    if let Some(state) = app.try_state::<WindowState>() {
+        if let Ok(mut desired) = state.desired_cursor.lock() {
+            *desired = Some(kind.to_string());
+        }
+    }
+    mirror_cursor_to_stylesheet(app, kind);
+    Ok(())
+}
+
+/// Mirror the commanded kind into the stylesheet custom property that the dock
+/// pet subtree resolves its cursor from. WebKitGTK re-derives the cursor from
+/// CSS for the element under the pointer on every move, so a stylesheet that
+/// disagrees with the native cursor produces two competing kinds and the pet
+/// flickers. The official frontend already commands the right kind per
+/// position (hand while dragging is enabled, arrow once it is disabled,
+/// pointer over the chest); the stylesheet follows that value instead of
+/// hard-coding one.
+fn mirror_cursor_to_stylesheet(app: &AppHandle, kind: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let script =
+        format!("document.documentElement.style.setProperty('--wuwa-pet-cursor','{kind}')");
+    if let Err(error) = window.eval(&script) {
+        let _ = crate::system::write_message(
+            app,
+            "warn",
+            &format!("[CURSOR] mirror '{kind}' into the stylesheet failed: {error}"),
+        );
+    }
+}
+
+/// Re-apply the mirrored kind so the stylesheet recovers the value after the
+/// frontend reloads its document (login, session restore), which drops the
+/// inline property while the commanded kind is still latched natively.
+fn resync_stylesheet_cursor(app: &AppHandle) {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return;
+    };
+    let Some(kind) = state
+        .desired_cursor
+        .lock()
+        .ok()
+        .and_then(|desired| desired.clone())
+    else {
+        return;
+    };
+    mirror_cursor_to_stylesheet(app, &kind);
 }
 
 /// A swallow (native click forwarding or dock drag) temporarily makes the whole
@@ -1302,10 +1356,7 @@ pub fn dispatch(
             if !matches!(kind, "default" | "pointer" | "grab" | "grabbing") {
                 return Err("Unsupported cursor".into());
             }
-            set_native_cursor(app, kind)?;
-            if let Ok(mut desired) = state.desired_cursor.lock() {
-                *desired = Some(kind.to_string());
-            }
+            apply_cursor_command(app, kind)?;
         }
         "ensure_main_taskbar_icon" => {
             main_window(app)?.set_skip_taskbar(false).map_err(err)?;
@@ -1454,8 +1505,14 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     // pointer is inside the shaped region.
     {
         let handle = app.clone();
+        // Resync the stylesheet property about once a second; the native cursor
+        // itself is re-applied on every tick.
+        let tick = std::sync::Arc::new(AtomicUsize::new(0));
         gtk::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
             reassert_main_cursor(&handle);
+            if tick.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
+                resync_stylesheet_cursor(&handle);
+            }
             gtk::glib::ControlFlow::Continue
         });
     }

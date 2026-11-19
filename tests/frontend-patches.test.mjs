@@ -11,8 +11,8 @@ import {
   patchPetCursor,
   patchRelaunch,
   patchSessionRestore,
-  PET_GRAB_ANCHORS,
-  PET_GRAB_CURSOR_MARKER,
+  PET_CURSOR_ANCHORS,
+  PET_CURSOR_MARKER,
   RELAUNCH_SOURCE,
   SESSION_RESTORE_SOURCE,
 } from '../scripts/frontend-patches.mjs';
@@ -218,16 +218,20 @@ test('the document language is set to Simplified Chinese once', () => {
   assert.throws(() => patchIndexLanguage('<html>'), /index language/);
 });
 
-test('dock pet declares the hand cursor so WebKitGTK stops overwriting it', () => {
-  const source = `.pet-dock{position:absolute;inset:0 auto auto 0}${PET_GRAB_ANCHORS[0]}${PET_GRAB_ANCHORS[1]}.reward-btn{cursor:pointer}`;
+test('dock pet cursor follows the frontend-commanded kind', () => {
+  const source = `.pet-dock{position:absolute;inset:0 auto auto 0}${PET_CURSOR_ANCHORS[0]}${PET_CURSOR_ANCHORS[1]}.reward-btn{cursor:pointer}`;
   const result = patchPetCursor(source);
   assert.ok(result.startsWith(source));
-  assert.ok(result.includes(PET_GRAB_CURSOR_MARKER));
-  // Scoped to the docked pet so panel and room-cat cursors keep their own rules,
-  // and chest buttons still win with their explicit pointer cursor.
-  assert.ok(result.includes('.pet-dock .cat-wrap,.pet-dock .pet-info-container{cursor:grab}'));
-  assert.ok(result.includes('.reward-btn{cursor:pointer}'));
-  assert.throws(() => patchPetCursor(source.replace(PET_GRAB_ANCHORS[0], '.cat-wrap{width:1px}')), /dock pet stylesheet rule changed/);
-  assert.throws(() => patchPetCursor(`${source}${PET_GRAB_CURSOR_MARKER}`), /already patched/);
-  assert.throws(() => patchPetCursor(`${PET_GRAB_ANCHORS[0]}${PET_GRAB_ANCHORS[1]}/* trailing */`), /does not end with a rule/);
+  assert.ok(result.includes(PET_CURSOR_MARKER));
+  // The whole dock subtree resolves to the kind the frontend commands through
+  // `set_native_input_cursor`; WebKitGTK then recomputes the same kind instead
+  // of an arrow, so the two cursor writers no longer alternate.
+  assert.ok(result.includes('html{--wuwa-pet-cursor:auto}'));
+  assert.ok(result.includes('.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}'));
+  // The command hook writes into that property, so the stylesheet must not
+  // hard-code a kind of its own.
+  assert.ok(!result.slice(source.length).includes('cursor:grab}'));
+  assert.throws(() => patchPetCursor(source.replace(PET_CURSOR_ANCHORS[0], '.cat-wrap{width:1px}')), /dock pet stylesheet rule changed/);
+  assert.throws(() => patchPetCursor(`${source}${PET_CURSOR_MARKER}`), /already patched/);
+  assert.throws(() => patchPetCursor(`${PET_CURSOR_ANCHORS[0]}${PET_CURSOR_ANCHORS[1]}/* trailing */`), /does not end with a rule/);
 });

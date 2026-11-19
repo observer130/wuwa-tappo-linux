@@ -11,7 +11,7 @@ import {
   patchPetCursor,
   patchRelaunch,
   patchSessionRestore,
-  PET_GRAB_ANCHORS,
+  PET_CURSOR_ANCHORS,
   RELAUNCH_SOURCE,
 } from './frontend-patches.mjs';
 
@@ -36,7 +36,7 @@ const styles = new Map(await Promise.all(
     await readFile(path.join(source, 'assets', name), 'utf8'),
   ]),
 ));
-const petCursorTargets = [...styles].filter(([, content]) => PET_GRAB_ANCHORS.every(anchor => content.includes(anchor)));
+const petCursorTargets = [...styles].filter(([, content]) => PET_CURSOR_ANCHORS.every(anchor => content.includes(anchor)));
 if (petCursorTargets.length !== 1) {
   throw new Error(`Expected one original dock pet stylesheet, found ${petCursorTargets.length}. Reconcile the Linux pet cursor fix before building.`);
 }
