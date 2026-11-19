@@ -8,8 +8,11 @@ import {
   patchDomesticSdkUrls,
   patchIndexLanguage,
   patchLoginReady,
+  patchPetCursor,
   patchRelaunch,
   patchSessionRestore,
+  PET_GRAB_ANCHORS,
+  PET_GRAB_CURSOR_MARKER,
   RELAUNCH_SOURCE,
   SESSION_RESTORE_SOURCE,
 } from '../scripts/frontend-patches.mjs';
@@ -213,4 +216,18 @@ test('the document language is set to Simplified Chinese once', () => {
   assert.equal(patchIndexLanguage('<html lang="en">'), '<html lang="zh-CN">');
   assert.equal(patchIndexLanguage('<html lang="zh-CN">'), '<html lang="zh-CN">');
   assert.throws(() => patchIndexLanguage('<html>'), /index language/);
+});
+
+test('dock pet declares the hand cursor so WebKitGTK stops overwriting it', () => {
+  const source = `.pet-dock{position:absolute;inset:0 auto auto 0}${PET_GRAB_ANCHORS[0]}${PET_GRAB_ANCHORS[1]}.reward-btn{cursor:pointer}`;
+  const result = patchPetCursor(source);
+  assert.ok(result.startsWith(source));
+  assert.ok(result.includes(PET_GRAB_CURSOR_MARKER));
+  // Scoped to the docked pet so panel and room-cat cursors keep their own rules,
+  // and chest buttons still win with their explicit pointer cursor.
+  assert.ok(result.includes('.pet-dock .cat-wrap,.pet-dock .pet-info-container{cursor:grab}'));
+  assert.ok(result.includes('.reward-btn{cursor:pointer}'));
+  assert.throws(() => patchPetCursor(source.replace(PET_GRAB_ANCHORS[0], '.cat-wrap{width:1px}')), /dock pet stylesheet rule changed/);
+  assert.throws(() => patchPetCursor(`${source}${PET_GRAB_CURSOR_MARKER}`), /already patched/);
+  assert.throws(() => patchPetCursor(`${PET_GRAB_ANCHORS[0]}${PET_GRAB_ANCHORS[1]}/* trailing */`), /does not end with a rule/);
 });

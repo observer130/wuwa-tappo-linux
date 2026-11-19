@@ -121,3 +121,34 @@ export function patchIndexLanguage(index) {
   }
   return index.replace('<html lang="en">', '<html lang="zh-CN">');
 }
+
+// WebKitGTK resolves the DOM cursor for the element under the pointer and
+// applies it to the WebKit child window whenever the pointer moves. The dock
+// pet has no cursor rule of its own, so WebKit keeps stamping the default arrow
+// over the hand cursor the official frontend requests with
+// `set_native_input_cursor` (on Windows that is a process-wide SetCursor, so
+// nothing overwrites it there). Declaring the same hand cursor in CSS makes the
+// two writers agree, which stops the pet from flickering between an arrow and
+// a hand while the pointer travels across it. `.pet-dock` scopes the rule to
+// the docked pet; chest buttons keep their own `cursor: pointer` rules.
+export const PET_GRAB_CURSOR_MARKER = '/* wuwatappo-linux: hand cursor over the dock pet */';
+export const PET_GRAB_ANCHORS = [
+  '.cat-wrap{position:relative;width:var(--pet-base-size, 200px);height:var(--pet-base-size, 200px)}',
+  '.pet-info-container{position:relative;width:180px;height:32px;margin-top:-21px;z-index:1;display:flex;flex-direction:row;align-items:center;justify-content:flex-end;align-self:flex-end;filter:drop-shadow(0px 2px 2px rgba(0,0,0,.2))}',
+];
+
+export function patchPetCursor(source) {
+  for (const anchor of PET_GRAB_ANCHORS) {
+    if (source.split(anchor).length !== 2) {
+      throw new Error(`Original dock pet stylesheet rule changed (${anchor.slice(0, 24)}); reconcile the Linux pet cursor fix before building.`);
+    }
+  }
+  if (source.includes(PET_GRAB_CURSOR_MARKER)) {
+    throw new Error('Dock pet stylesheet is already patched; build from the pristine official frontend.');
+  }
+  const trimmed = source.trimEnd();
+  if (!trimmed.endsWith('}')) {
+    throw new Error('Original dock pet stylesheet does not end with a rule; reconcile the Linux pet cursor fix before building.');
+  }
+  return `${trimmed}\n${PET_GRAB_CURSOR_MARKER}\n.pet-dock .cat-wrap,.pet-dock .pet-info-container{cursor:grab}\n`;
+}
