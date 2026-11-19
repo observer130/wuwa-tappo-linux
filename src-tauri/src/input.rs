@@ -917,10 +917,21 @@ fn run_monitor(
         {
             last_position = None;
         }
-        if !state.pointer_inside.load(Ordering::Acquire) {
+        if !state.pointer_inside.load(Ordering::Acquire) && !pointer_swallow_active(&app) {
             // Outside the shaped input region XWayland only reports the frozen
-            // last-inside coordinate. Never let it drive hover or drag.
+            // last-inside coordinate. Never let it drive hover or drag, but keep
+            // a low-rate out-of-region heartbeat: the official frontend also
+            // relies on mouse moves to re-sync its hit regions, and without any
+            // events a transient passthrough state can keep the window
+            // click-through forever after a drag. Swallow (drag / click
+            // forwarding) keeps live coordinates so an edge drag cannot be
+            // teleported by the sentinel.
             last_position = None;
+            if last_move_emit.elapsed() >= Duration::from_millis(100) {
+                last_move_emit = Instant::now();
+                let payload = pointer_leave_payload(&app);
+                app.state::<InputMonitor>().emit_pointer_move(&app, payload);
+            }
         } else if last_move_emit.elapsed() >= Duration::from_millis(33) {
             if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
                 if !over_auxiliary(&app, css_x, css_y) {

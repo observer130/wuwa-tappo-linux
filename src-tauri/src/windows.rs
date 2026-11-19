@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, RwLock,
     },
 };
@@ -78,6 +78,7 @@ pub struct WindowState {
     webview_scale: RwLock<Option<f64>>,
     shape: Mutex<Option<crate::shape::InputShape>>,
     shape_last: Mutex<Option<(u8, usize)>>,
+    force_epoch: AtomicU64,
 }
 
 impl WindowState {
@@ -1000,10 +1001,40 @@ pub fn dispatch(
             apply_main_input_shape(app)?;
         }
         "set_main_force_cursor_ignore" => {
-            state.hit.write().map_err(err)?.force_ignore = args
+            let enabled = args
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or("Missing enabled state")?;
+            state.hit.write().map_err(err)?.force_ignore = enabled;
+            if enabled {
+                // The frontend uses force-ignore as a transient passthrough
+                // (drag edge / fullscreen shell) and expects a later hit-region
+                // sync to restore input. If that sync never arrives the window
+                // would stay click-through forever, so clear a stale flag after
+                // a short grace period. A newer request bumps the epoch and wins.
+                let epoch = state.force_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let restore = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        let state = restore.state::<WindowState>();
+                        if state.force_epoch.load(Ordering::Acquire) != epoch {
+                            return;
+                        }
+                        let mut hit = match state.hit.write() {
+                            Ok(hit) => hit,
+                            Err(_) => return,
+                        };
+                        if !hit.force_ignore {
+                            return;
+                        }
+                        hit.force_ignore = false;
+                        drop(hit);
+                        let _ = apply_main_input_shape(&restore);
+                    });
+                });
+            }
             apply_main_input_shape(app)?;
         }
         "set_main_swallow_mouse" => {
