@@ -11,7 +11,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 │  官方 Vue 前端（build/frontend，嵌入二进制）                  │
 │   ├─ main：透明全屏桌宠覆盖层                                │
 │   ├─ panel / login / about / oss-notice / update / toast     │
-│   └─ 注入脚本：platform.js + websocket.js                    │
+│   └─ 注入脚本：platform.js + websocket.js + 登录账号历史      │
 │                    │ Tauri IPC (invoke / event)              │
 │                    ▼                                         │
 │  Rust 后端（src-tauri/src）                                  │
@@ -143,6 +143,12 @@ XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWay
 `patchCookieStorage` 在读取时先尝试 `document.cookie`，失败或无值时回退到同源 LocalStorage；写入时同时尝试 Cookie 与 LocalStorage（带过期时间），删除时两边一起清除。LocalStorage 由 WebKitGTK 持久化在应用数据目录，因此主窗口、登录窗口和重启后的实例共享同一登录态。应用数据目录在启动时会被收紧到 0700（无法 chmod 时只记录警告），token 为明文存储，依赖该目录的本地权限，不使用系统密钥环。
 
 `patchSessionRestore` 为启动恢复加了传输层重试：冷启动时网络尚未就绪导致的 `network_error` / `timeout` 最多尝试 3 次（重试间隔 1s、2s），避免把仍然有效的 token 误判为未登录；`10002/10003` 等鉴权拒绝仍然立即清除登录态。服务端因“账号已在其他设备登录”（90002）或旧 token 失效返回 10003 时，仍会按官方逻辑登出，这一层无法由客户端绕过。
+
+### 最近登录账号与手机号
+
+Windows 原版运行在 WebView2 中，登录表单由浏览器提供表单历史下拉。WebKitGTK 没有等价能力，因此登录窗口额外注入 `scripts/login-account-history.js`：账号框或手机号框获得焦点、单击时，在输入框下方列出对应的最近成功登录值；支持鼠标选择、上下方向键、Enter 确认和 Esc 关闭，输入内容用于过滤列表。
+
+历史只在 SDK `onLoginSuccessful` 确认成功后写入：账号密码登录记录账号（`wuwatappo-login-accounts`），手机号验证码登录记录手机号（`wuwatappo-login-phones`），失败尝试不写入；密码和验证码不经过该脚本。两类记录各自去重并保留最近 5 个，保存在登录窗口同源 LocalStorage 中，应用数据目录权限仍是 0700。该脚本只注入 `login` 窗口，不修改官方前端资源。
 
 ## 安全边界
 

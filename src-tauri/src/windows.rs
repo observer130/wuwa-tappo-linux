@@ -171,6 +171,10 @@ fn initialize(label: &str) -> Result<String, String> {
         include_str!("../../scripts/websocket.js"),
         include_str!("../../scripts/platform.js")
     );
+    if label == "login" {
+        initialization.push('\n');
+        initialization.push_str(include_str!("../../scripts/login-account-history.js"));
+    }
     if label == "main" && cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--self-test")
     {
         initialization.push_str(include_str!("../../scripts/runtime-smoke.js"));
@@ -1349,6 +1353,16 @@ mod tests {
             ..Insets::default()
         };
         assert_eq!(dock_edge((0, 0, 1920, 32), monitor, &top_reserved), None);
+    }
+
+    #[test]
+    fn login_account_history_is_injected_only_into_the_login_window() {
+        let login = initialize("login").expect("login initialization");
+        assert!(login.contains("wuwatappo-login-accounts"));
+        assert!(login.contains("wuwatappo-login-phones"));
+        let main = initialize("main").expect("main initialization");
+        assert!(!main.contains("wuwatappo-login-accounts"));
+        assert!(!main.contains("wuwatappo-login-phones"));
     }
 
     #[test]
