@@ -99,9 +99,11 @@ grep '\[MOUSE\]' ~/.local/share/dev.w33d.wuwatappo.cn.linux/logs/app.log | tail 
 
 ## Wayland 下悬停与点击行为
 
-Wayland 只把指针事件交给有输入区域的 XWayland 窗口，指针离开桌宠的输入区域后，X11 全局坐标会冻结在离开位置。移植版因此用主窗口的 GDK enter/leave 通知维护 `pointer_inside`：离开区域后冻结采样不再驱动悬停，官方自动隐藏计时可正常下陷；指针停在原地而命中区域重新盖回时（拖拽结束、宠物自行移动），日志会出现 `[POINTER] re-entered hit region without motion` 并恢复悬停。区域外点击只计入计数，不会命中桌宠或触发拖动。
+Wayland 只把指针事件交给有输入区域的 XWayland 窗口，指针离开桌宠的输入区域后，X11 全局坐标会冻结在离开位置。移植版因此用主窗口的 GDK enter/leave 通知维护 `pointer_inside`：离开区域后冻结采样不再驱动悬停，官方自动隐藏计时可正常下陷；指针停在原地而命中区域重新盖回时（拖拽结束、宠物自行移动），日志会出现 `[POINTER] re-entered hit region without motion` 并恢复悬停。该自动恢复还需要「自本次 leave 起采样曾被当时的命中区域判为不覆盖」的见证，物理移出后停在桌面上的指针不会被误恢复。区域外点击只计入计数，不会命中桌宠或触发拖动。
 
 拖拽结束后窗口保持可交互：官方前端的 force ignore 状态在原生层只记账、不清空输入区域。此时指针静止点击宠物区域会被本应用消费而不是落透到桌面，与 Windows 有别，但官方前端对两种来源的响应一致。
+
+悬停手形光标由前端经 `set_native_input_cursor` 下发，原生层递归设置到整棵窗口树（含 WebKit 子窗口）。若桌宠上光标仍为箭头，多为当前光标主题缺少 `grab`（原生会按 `closed-hand`、`hand2` 别名回退）；仍异常时请附带 app.log 与桌面环境信息反馈。
 
 游戏模式等导致主窗口输入区域为空或只包含宝箱按钮时，悬停不会触发宝箱倒计时（Windows 原生可以），这是平台的已知降级。需要悬停显示计时请关闭游戏模式，或把指针移回桌宠上。
 

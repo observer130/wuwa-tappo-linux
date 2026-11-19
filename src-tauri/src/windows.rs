@@ -271,6 +271,27 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
             )
         }
     };
+    if mode != 2 {
+        // Witness fast region transitions against the latest pointer sample:
+        // the 33ms poll can step over a 26ms union-then-final churn during a
+        // dock drag release, and a parked pointer needs that uncovered moment
+        // to allow the later region re-entry.
+        if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
+            if !monitor.pointer_inside() {
+                let uncovered = if mode == 0 {
+                    true
+                } else {
+                    match monitor.pointer_sample() {
+                        Some((sample_x, sample_y)) => !main_shape_covers(app, sample_x, sample_y),
+                        None => false,
+                    }
+                };
+                if uncovered {
+                    monitor.mark_pointer_uncovered();
+                }
+            }
+        }
+    }
     let mut shape = state.shape.lock().map_err(err)?;
     if shape.is_none() {
         *shape = Some(crate::shape::InputShape::for_window(&main_window(app)?)?);
@@ -373,6 +394,53 @@ fn install_crossing_handlers(widget: &gtk::Widget, app: &AppHandle) {
         for child in container.children() {
             install_crossing_handlers(&child, app);
         }
+    }
+}
+
+/// Cursor names vary by theme and server age: bare Xvfb resolves "grab" but
+/// not "default", older servers only know the core-font names. Try the CSS
+/// name first (the official Windows glyph), then the traditional aliases.
+fn resolve_cursor(display: &gtk::gdk::Display, kind: &str) -> Option<gtk::gdk::Cursor> {
+    let candidates: &[&str] = match kind {
+        "pointer" => &["pointer", "hand2", "hand"],
+        "grab" => &["grab", "closed-hand", "hand2"],
+        "grabbing" => &["grabbing", "closed-hand", "hand2"],
+        _ => &["default", "left_ptr", "arrow"],
+    };
+    candidates
+        .iter()
+        .find_map(|name| gtk::gdk::Cursor::from_name(display, name))
+}
+
+/// The frontend drives the dock pet's hover cursor through this command: the
+/// CSS has no cursor rule on the pet body (only the room cats and the chest
+/// buttons do), and on Windows the global input hook makes the window
+/// cursor authoritative. On X11 the displayed cursor is the one defined by
+/// the deepest window under the pointer, so a toplevel-only update is always
+/// overridden by the WebKit view's own cursor. Walk the whole GDK window
+/// tree and set the cursor on every layer, the WebKit view included.
+fn set_native_cursor(app: &AppHandle, kind: &str) -> Result<(), String> {
+    let window = main_window(app)?;
+    let cursor = match kind {
+        "pointer" => tauri::CursorIcon::Hand,
+        "grab" => tauri::CursorIcon::Grab,
+        "grabbing" => tauri::CursorIcon::Grabbing,
+        _ => tauri::CursorIcon::Default,
+    };
+    window.set_cursor_icon(cursor).map_err(err)?;
+    let gtk_window = window.gtk_window().map_err(err)?;
+    let gdk_window = gtk_window.window().ok_or("Main window is not realized")?;
+    let display = gtk_window.display();
+    let cursor =
+        resolve_cursor(&display, kind).ok_or_else(|| format!("Unknown cursor kind '{kind}'"))?;
+    set_cursor_tree(&gdk_window, Some(&cursor));
+    Ok(())
+}
+
+fn set_cursor_tree(gdk_window: &gtk::gdk::Window, cursor: Option<&gtk::gdk::Cursor>) {
+    gdk_window.set_cursor(cursor);
+    for child in gdk_window.children() {
+        set_cursor_tree(&child, cursor);
     }
 }
 
@@ -1190,14 +1258,10 @@ pub fn dispatch(
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or("default");
-            let cursor = match kind {
-                "pointer" => tauri::CursorIcon::Hand,
-                "grab" => tauri::CursorIcon::Grab,
-                "grabbing" => tauri::CursorIcon::Grabbing,
-                "default" => tauri::CursorIcon::Default,
-                _ => return Err("Unsupported cursor".into()),
-            };
-            main_window(app)?.set_cursor_icon(cursor).map_err(err)?;
+            if !matches!(kind, "default" | "pointer" | "grab" | "grabbing") {
+                return Err("Unsupported cursor".into());
+            }
+            set_native_cursor(app, kind)?;
         }
         "ensure_main_taskbar_icon" => {
             main_window(app)?.set_skip_taskbar(false).map_err(err)?;

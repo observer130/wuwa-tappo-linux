@@ -141,6 +141,8 @@ XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWay
 - 主窗口控件层级的 `enter-notify-event` / `leave-notify-event` 维护输入线程的 `pointer_inside`。leave 时向官方前端发送一次携带冻结坐标的哨兵 `mouse-move`，让悬停判定（`jc`）像 Windows 一样清除；此后冻结采样不再驱动悬停/光标，官方自动隐藏计时也因此可以正常下陷。
 - 区域外的鼠标按键仍上报点击计数，但被 `pointer_inside` 门控拦截，不会命中桌宠、宝箱或触发拖动。区域外采样只有可证实实时（指针落在其他 X 窗口上、坐标在变化）时才转发真坐标，否则不发送。
 - KWin 的输入区域事件不对称：区域从静止指针下方移除会触发 leave，区域重新盖住静止指针不会触发 enter。输入线程用 evdev 运动计数补偿——自最近一次 leave 起没有指针运动时，冻结采样即真实位置；XQueryPointer 采样若落回当前生效的命中区域内，自动恢复 `pointer_inside` 并重新上报一次位置，指针停在原处也能重新触发悬停。任何真实指针运动都会使该证明失效，直到下一次 leave 重新建立。
+- 运动计数本身分不清「指针停到桌面上」与「区域从指针下方移走」：物理离开时 evdev 先读到离开运动，随后指针停下，纯计数判据会把冻结样本误判为仍在区域内。因此自动恢复还需要「uncovered 见证」——自本次 leave 起，采样至少有一次不被当时的生效命中区域覆盖（区域同步应用时在主线程即时判定，避免 33 ms 轮询错过毫秒级的过渡区域）。物理离开后区域静止且冻结样本始终在宠物矩形内，见证不成立，误报被永久阻断；真正的区域重建（自动隐藏收起、拖拽后区域同步）构造性地经过不覆盖瞬间，照常放行。
+- 悬停手形光标：官方前端经 `set_native_input_cursor` 下发 `default/pointer/grab/grabbing`（Windows 全局 SetCursor 语义，宠物本体 CSS 无 cursor 规则）。X11 显示的光标由指针下最深层窗口决定，只设 GTK toplevel 会被 WebKit 子窗口覆盖。原生层把命名光标递归设置到整棵 GDK 窗口树（含 WebKit 子窗口），并按 `default→left_ptr→arrow`、`grab→closed-hand→hand2` 等别名链回退，兼容精简的 Xvfb/旧主题环境。
 - `set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态（启动、拖拽结束）。Windows 原版此时清空命中区域，靠全局钩子的真坐标流驱动下一次交互；Linux 上清空会让 KWin 发出 leave、把静止指针的 `pointer_inside` 卡死在 false（区域恢复也不会产生 enter），交互永不恢复。因此原生层对该状态只记账、不清空 XShape：拖拽结束后命中区域保持原样，指针未离开窗口时 `pointer_inside` 全程为真，下一次按键照常经 `set_main_swallow_mouse` 恢复交互。与 Windows 的差别是拖拽后指针静止时，点击宠物区域会被本应用窗口消费而不是落透到桌面；官方前端对两种来源的响应一致，用户感知相同。
 - swallow（拖动/点击转发）期间使用实时坐标且不转发合成离开，避免影响拖拽；纯 X11 会话下坐标本身不会冻结，但同样按 `pointer_inside` 门控上报。
 
