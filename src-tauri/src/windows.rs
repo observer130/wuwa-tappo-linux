@@ -80,6 +80,15 @@ pub struct WindowState {
     shape_last: Mutex<Option<(u8, usize)>>,
 }
 
+impl WindowState {
+    /// Whether the frontend temporarily swallowed the whole window (dock drag
+    /// or native click forwarding). Live pointer coordinates are valid then even
+    /// when the pointer is outside the normal hit regions.
+    pub(crate) fn swallow_active(&self) -> bool {
+        self.hit.read().map(|hit| hit.swallow).unwrap_or(false)
+    }
+}
+
 #[derive(Default)]
 struct MainGeometry {
     left: f64,
@@ -340,32 +349,19 @@ fn install_crossing_handlers(widget: &gtk::Widget, app: &AppHandle) {
 /// pet, and feeding a synthetic position into the official drag handler would
 /// teleport the dock. Only the region-shaped state reports a pet hover leaving.
 fn emit_pointer_leave(app: &AppHandle) {
-    let swallowed = app
+    if app
         .try_state::<WindowState>()
-        .and_then(|state| state.hit.read().ok().map(|hit| hit.swallow))
-        .unwrap_or(false);
-    if swallowed {
+        .is_some_and(|state| state.swallow_active())
+    {
         return;
     }
-    // The official frontend converts the payload with its own cached window
-    // origin/scale, so derive the out-of-region position from the live window
-    // instead of assuming the window sits at a non-negative screen position.
-    let (origin_x, origin_y, tauri_scale) = main_window(app)
-        .ok()
-        .map(|window| {
-            let scale = window
-                .scale_factor()
-                .ok()
-                .filter(|scale| scale.is_finite() && *scale > 0.0)
-                .unwrap_or(1.0);
-            match window.inner_position().ok() {
-                Some(position) => (position.x as f64, position.y as f64, scale),
-                None => (0.0, 0.0, scale),
-            }
-        })
-        .unwrap_or((0.0, 0.0, 1.0));
-    let payload = crate::input::pointer_leave_position(origin_x, origin_y, tauri_scale);
-    let _ = app.emit("mouse-move", payload);
+    let payload = crate::input::pointer_leave_payload(app);
+    match app.try_state::<crate::input::InputMonitor>() {
+        Some(monitor) => monitor.emit_pointer_move(app, payload),
+        None => {
+            let _ = app.emit("mouse-move", payload);
+        }
+    }
 }
 
 fn build_window(

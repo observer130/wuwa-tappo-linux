@@ -97,6 +97,10 @@ grep '\[MOUSE\]' ~/.local/share/dev.w33d.wuwatappo.cn.linux/logs/app.log | tail 
 
 主窗口的鼠标穿透由 XShape 输入区域实现。日志中的 `[SHAPE] mode=regions rects=N` 表示输入区域已更新；如果该行为 `rects=0` 且没有更新，桌宠区域不会接收点击。
 
+## Wayland 下悬停不显示宝箱计时
+
+Wayland 只把指针事件交给有输入区域的 XWayland 窗口，指针离开桌宠的输入区域后 XWayland 不再提供全局坐标。移植版因此只在指针真实位于主窗口输入区域时更新悬停：游戏模式等导致主窗口输入区域为空或只包含宝箱按钮时，悬停不会触发宝箱倒计时（Windows 原生可以），这是平台的已知降级。需要悬停显示计时请关闭游戏模式，或把指针移回桌宠上。
+
 ## Wayland 下无法点击、焦点异常或位置偏移
 
 支持路径是 **X11 / XWayland**。请：

@@ -70,6 +70,8 @@ struct MonitorState {
     granted: AtomicBool,
     stop: AtomicBool,
     pointer_resync: AtomicBool,
+    pointer_inside: AtomicBool,
+    pointer_emit_lock: Mutex<()>,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
     auxiliary_hit_test: Mutex<Option<AuxiliaryHitTest>>,
@@ -121,6 +123,8 @@ impl InputMonitor {
                 granted: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
                 pointer_resync: AtomicBool::new(false),
+                pointer_inside: AtomicBool::new(false),
+                pointer_emit_lock: Mutex::new(()),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
                 auxiliary_hit_test: Mutex::new(None),
@@ -157,21 +161,49 @@ impl InputMonitor {
         self.state.status()
     }
 
+    /// Whether the pointer is currently inside the shaped input region. Outside
+    /// it XWayland only reports the frozen last-inside position, so polled
+    /// coordinates must not drive hover, drag or click hit-testing.
+    pub fn pointer_inside(&self) -> bool {
+        self.state.pointer_inside.load(Ordering::Acquire)
+    }
+
     /// The pointer entered the shaped input region. Ask the polling loop to
     /// report the next sample even when its coordinates did not change:
     /// XWayland freezes the pointer position while it is outside the region, so
     /// a re-entry at the same pixel as the leave point would otherwise not end
     /// the cleared hover state.
     pub fn mark_pointer_entered(&self) {
+        self.state.pointer_inside.store(true, Ordering::Release);
         self.state.pointer_resync.store(true, Ordering::Release);
     }
 
     /// The pointer left the shaped input region. Cancel a pending forced
     /// resync: when an enter is immediately followed by a leave, the forced
     /// report would replay XWayland's frozen last-inside position and re-open
-    /// the hover that the leave handler has just cleared.
+    /// the hover that the leave handler has just cleared. The polling loop also
+    /// drops its last sample while outside, so no residual move is emitted.
     pub fn mark_pointer_left(&self) {
+        self.state.pointer_inside.store(false, Ordering::Release);
         self.state.pointer_resync.store(false, Ordering::Release);
+    }
+
+    /// Emit a pointer move. Serialized with the leave sentinel and button
+    /// events so a click never observes a move that was produced after it.
+    pub(crate) fn emit_pointer_move(&self, app: &AppHandle, position: MousePosition) {
+        let _guard = self.state.pointer_emit_lock.lock();
+        let _ = app.emit("mouse-move", position);
+    }
+
+    fn emit_pointer_button(
+        &self,
+        app: &AppHandle,
+        move_position: MousePosition,
+        button: MouseButton,
+    ) {
+        let _guard = self.state.pointer_emit_lock.lock();
+        let _ = app.emit("mouse-move", move_position);
+        let _ = app.emit("mouse-button", button);
     }
 
     pub fn start(&self, app: AppHandle) -> Result<InputStatus, String> {
@@ -602,6 +634,43 @@ fn over_auxiliary(app: &AppHandle, css_x: f64, css_y: f64) -> bool {
         .unwrap_or(false)
 }
 
+/// The dock drag and native click forwarding temporarily make the whole window
+/// interactive (`swallow`), so live coordinates are valid even when the pointer
+/// is outside the normal hit regions.
+fn pointer_swallow_active(app: &AppHandle) -> bool {
+    app.try_state::<crate::windows::WindowState>()
+        .map(|state| state.swallow_active())
+        .unwrap_or(false)
+}
+
+/// The synthetic out-of-region position used when the pointer is outside the
+/// shaped input region. Derived from the live window origin/scale so it stays
+/// outside every hit region even on monitors with negative coordinates.
+pub(crate) fn pointer_leave_payload(app: &AppHandle) -> MousePosition {
+    let (origin_x, origin_y, scale) = app
+        .get_webview_window("main")
+        .map(|window| {
+            let scale = window
+                .scale_factor()
+                .ok()
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0);
+            match window.inner_position().ok() {
+                Some(position) => (position.x as f64, position.y as f64, scale),
+                None => (0.0, 0.0, scale),
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0));
+    pointer_leave_position(origin_x, origin_y, scale)
+}
+
+/// Button events still drive the global click counter, but a press that lands
+/// outside the shaped input region must not be interpreted as a UI hit. Only
+/// the pointer-inside state (or an active swallow) may receive live coordinates.
+fn button_targets_ui(pointer_inside: bool, swallow: bool) -> bool {
+    pointer_inside || swallow
+}
+
 /// The official frontend keeps the shortcut table in the native layer. The same
 /// evdev stream that counts key presses therefore also drives `app-shortcut`.
 fn dispatch_shortcut(
@@ -758,22 +827,35 @@ fn run_monitor(
                         } else {
                             pressed_buttons.remove(button).unwrap_or(false)
                         };
+                        let monitor = app.state::<InputMonitor>();
+                        let inside = monitor.pointer_inside();
+                        let swallow = pointer_swallow_active(&app);
+                        let ui_target = button_targets_ui(inside, swallow);
                         let action = if pressed { "press" } else { "release" };
                         let message = format!(
-                            "[MOUSE] {button} {action} payload=({:.0},{:.0}) css=({:.0},{:.0}) aux={auxiliary} target={main_target}",
+                            "[MOUSE] {button} {action} payload=({:.0},{:.0}) css=({:.0},{:.0}) aux={auxiliary} target={main_target} inside={inside} ui={ui_target}",
                             position.x, position.y, css_x, css_y
                         );
                         let _ = crate::system::write_message(&app, "info", &message);
                         if !main_target {
                             continue;
                         }
-                        let _ = app.emit("mouse-move", position);
+                        // Outside the shaped input region the sampled position is
+                        // XWayland's frozen last-inside coordinate. Keep sending the
+                        // button for the global click counter, but replace the
+                        // companion move with an out-of-region sentinel so the
+                        // official frontend cannot hit-test the pet or reward UI.
+                        let move_position = if ui_target {
+                            position
+                        } else {
+                            pointer_leave_payload(&app)
+                        };
                         let payload = MouseButton {
                             button,
                             action,
-                            member_id: position.member_id,
+                            member_id: if ui_target { position.member_id } else { None },
                         };
-                        let _ = app.emit("mouse-button", payload);
+                        monitor.emit_pointer_button(&app, move_position, payload);
                     } else if is_gamepad_button(event.code) {
                         if event.value == 1 {
                             if pressed_gamepad_buttons.insert(event.code) {
@@ -830,10 +912,16 @@ fn run_monitor(
             }
         }
         // Cursor movement is polled so it also works for absolute/touchpad devices.
-        if state.pointer_resync.swap(false, Ordering::AcqRel) {
+        if state.pointer_resync.swap(false, Ordering::AcqRel)
+            && state.pointer_inside.load(Ordering::Acquire)
+        {
             last_position = None;
         }
-        if last_move_emit.elapsed() >= Duration::from_millis(33) {
+        if !state.pointer_inside.load(Ordering::Acquire) {
+            // Outside the shaped input region XWayland only reports the frozen
+            // last-inside coordinate. Never let it drive hover or drag.
+            last_position = None;
+        } else if last_move_emit.elapsed() >= Duration::from_millis(33) {
             if let Some((position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
                 if !over_auxiliary(&app, css_x, css_y) {
                     let changed = last_position
@@ -843,7 +931,8 @@ fn run_monitor(
                         .unwrap_or(true);
                     if changed {
                         last_position = Some((position.x, position.y));
-                        let _ = app.emit("mouse-move", position);
+                        app.state::<InputMonitor>()
+                            .emit_pointer_move(&app, position);
                     }
                 } else {
                     last_position = None;
@@ -898,14 +987,25 @@ mod tests {
     }
 
     #[test]
-    fn pointer_leave_cancels_a_pending_resync() {
+    fn pointer_crossing_state_gates_ui_events() {
         let monitor = InputMonitor::new();
+        assert!(!monitor.pointer_inside());
         assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+
         monitor.mark_pointer_entered();
+        assert!(monitor.pointer_inside());
         assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
-        monitor.mark_pointer_entered();
+        assert!(button_targets_ui(true, false));
+
         monitor.mark_pointer_left();
+        assert!(!monitor.pointer_inside());
         assert!(!monitor.state.pointer_resync.load(Ordering::Acquire));
+        assert!(!button_targets_ui(false, false));
+        assert!(
+            button_targets_ui(false, true),
+            "swallow keeps live coordinates"
+        );
+
         monitor.mark_pointer_entered();
         assert!(monitor.state.pointer_resync.swap(false, Ordering::AcqRel));
     }
@@ -963,6 +1063,8 @@ mod tests {
             granted: AtomicBool::new(true),
             stop: AtomicBool::new(false),
             pointer_resync: AtomicBool::new(false),
+            pointer_inside: AtomicBool::new(false),
+            pointer_emit_lock: Mutex::new(()),
             error: Mutex::new(Some("input_monitor_not_running".into())),
             member_resolver: Mutex::new(None),
             auxiliary_hit_test: Mutex::new(None),
