@@ -143,7 +143,7 @@ XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWay
 - KWin 的输入区域事件不对称：区域从静止指针下方移除会触发 leave，区域重新盖住静止指针不会触发 enter。输入线程用 evdev 运动计数补偿——自最近一次 leave 起没有指针运动时，冻结采样即真实位置；XQueryPointer 采样若落回当前生效的命中区域内，自动恢复 `pointer_inside` 并重新上报一次位置，指针停在原处也能重新触发悬停。任何真实指针运动都会使该证明失效，直到下一次 leave 重新建立。
 - 运动计数本身分不清「指针停到桌面上」与「区域从指针下方移走」：物理离开时 evdev 先读到离开运动，随后指针停下，纯计数判据会把冻结样本误判为仍在区域内。因此自动恢复还需要「uncovered 见证」——采样至少有一次不被当时的生效命中区域覆盖。区域同步在主线程应用成功后就地判定，33 ms 轮询不会漏掉毫秒级过渡；判定不依赖 `pointer_inside`，因为形状变更产生的 leave 通知要等下一轮主循环才到达 GTK 线程，先于它到达的过渡同样要计入。见证按 evdev 运动纪元打标而不是在下次 leave 时清零，所以「过渡先于 leave 到达」的次序不会丢掉见证，物理移动抬高纪元后旧见证自动失效。该判据的前提是物理离开后命中区域在无运动期间保持不动；若前端恰好在这个窗口内让区域先移开再盖回冻结样本，仍可能误恢复一次——悬停面板重现通常需要指针移动并抬纪元，因此概率很低。真正的区域重建（自动隐藏收起、拖拽后区域同步）经过不覆盖瞬间，照常放行。
 - 桌宠光标：官方前端经 `set_native_input_cursor` / `set_overlay_cursor` 下发 `default/pointer/grab/grabbing`（Windows 全局 SetCursor 语义，宠物本体 CSS 无 cursor 规则）。X11 显示的光标由指针下最深层窗口决定，只设 GTK toplevel 会被 WebKit 子窗口覆盖；原生层把命名光标递归设置到整棵 GDK 窗口树（含 WebKit 子窗口），并按 `default→left_ptr→arrow`、`grab→closed-hand→hand2` 等别名链回退，兼容精简的 Xvfb/旧主题环境。前端只在下发的 kind 变化时发命令（`er` 闩锁），而 WebKitGTK 会在指针移动、悬停 UI 挂载等时机重算 DOM 光标并写回子窗口——两个写入者不同值时，光标会逐帧在手形与箭头间闪烁。因此原生层把命令的 kind 同时镜像进样式表自定义属性 `--wuwa-pet-cursor`，由 `.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}` 让 WebKit 的重算结果与命令一致；禁用移动时前端判定为 `default`（箭头）、拖拽启用时为 `grab`（手形）、宝箱按钮上为 `pointer`，均按官方判定跟随，无需原生猜模式。原生层另外在指针处于命中区域内时以 33 ms 节拍重复应用该 kind（GDK 按名字缓存光标对象，重放不会制造新资源），并每秒重写一次样式属性，以便前端重新加载文档后恢复；离开区域后停止维护，桌面光标不受影响。
-- `set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态（启动、拖拽结束）。Windows 原版此时清空命中区域，靠全局钩子的真坐标流驱动下一次交互；Linux 上清空会让 KWin 发出 leave、把静止指针的 `pointer_inside` 卡死在 false（区域恢复也不会产生 enter），交互永不恢复。因此原生层对该状态只记账、不清空 XShape：拖拽结束后命中区域保持原样，指针未离开窗口时 `pointer_inside` 全程为真，下一次按键照常经 `set_main_swallow_mouse` 恢复交互。与 Windows 的差别是拖拽后指针静止时，点击宠物区域会被本应用窗口消费而不是落透到桌面；官方前端对两种来源的响应一致，用户感知相同。
+- `set_main_force_cursor_ignore(true)` 是官方前端的临时整窗穿透状态（启动、拖拽结束）。Windows 原版此时清空命中区域，靠全局钩子的真坐标流驱动下一次交互；Linux 上清空会让 KWin 发出 leave、把静止指针的 `pointer_inside` 卡死在 false（区域恢复也不会产生 enter），交互永不恢复。因此原生层对该状态只记账、不清空 XShape：拖拽结束后命中区域保持原样，指针未离开窗口时 `pointer_inside` 全程为真，下一次按键照常经 `set_main_swallow_mouse` 恢复交互。与 Windows 的差别是拖拽后指针静止时，点击宠物区域会被本应用窗口消费而不是落透到桌面；全屏游戏/视频等窗口与桌宠重叠时同样如此。官方前端对两种来源的响应一致，用户感知相同。
 - swallow（拖动/点击转发）期间使用实时坐标且不转发合成离开，避免影响拖拽；纯 X11 会话下坐标本身不会冻结，但同样按 `pointer_inside` 门控上报。
 
 ### 桌宠光标
@@ -162,9 +162,11 @@ XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWay
 
 ### 最近登录账号与手机号
 
-Windows 原版运行在 WebView2 中，登录表单由浏览器提供表单历史下拉。WebKitGTK 没有等价能力，因此登录窗口额外注入 `scripts/login-account-history.js`：账号框或手机号框获得焦点、单击时，在输入框下方列出对应的最近成功登录值；支持鼠标选择、上下方向键、Enter 确认和 Esc 关闭，输入内容用于过滤列表。
+WebKitGTK 没有登录框历史下拉能力，因此登录窗口额外注入 `scripts/login-account-history.js`：账号框或手机号框获得焦点、单击时，在输入框下方列出对应的最近成功登录值；支持鼠标选择、上下方向键、Enter 确认和 Esc 关闭，输入内容用于过滤列表。下拉以 `position: fixed` 贴在输入框所在 wrapper 下方，靠近视口底部时翻到上方。
 
-历史只在 SDK `onLoginSuccessful` 确认成功后写入：账号密码登录记录账号（`wuwatappo-login-accounts`），手机号验证码登录记录手机号（`wuwatappo-login-phones`），失败尝试不写入；密码和验证码不经过该脚本。两类记录各自去重并保留最近 5 个，保存在登录窗口同源 LocalStorage 中，应用数据目录权限仍是 0700。该脚本只注入 `login` 窗口，不修改官方前端资源。
+历史只在 SDK `onLoginSuccessful` 确认成功后写入：账号密码登录记录用户在账号框里实际提交的标识（`wuwatappo-login-accounts`），手机号验证码登录记录手机号（`wuwatappo-login-phones`），失败尝试不写入；密码和验证码不经过该脚本。SDK 会在自己的冒泡 `input` 处理器里清洗输入（例如去掉手机号中的空格），脚本在下一个微任务读取清洗后的值，避免把原始粘贴写进历史。SDK 回传的用户名是规范名，邮箱或手机号登录时与输入的标识不同，因此不以逐字相等作为写入条件。两类记录各自去重并保留最近 5 个，保存在登录窗口同源 LocalStorage 中，应用数据目录权限仍是 0700。
+
+该脚本作为独立的 initialization script 只注入 `login` 窗口，不修改官方前端资源；脚本自身异常不会拖垮 websocket/platform 等共用 shim。它依赖官方登录表单的固定锚点（`anchor-account`、`anchor-phone`）与 SDK 事件总线，前端升级导致锚点变化时静默降级为没有下拉（见 troubleshooting）。脚本幂等，重复注入不会重复挂载下拉或监听器。
 
 ## 安全边界
 

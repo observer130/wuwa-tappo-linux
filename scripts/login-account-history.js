@@ -1,4 +1,9 @@
 (() => {
+  // A second injection (another initialization path or window) must not add a
+  // duplicate menu and a second set of document listeners.
+  if (window.__wuwatappoLoginHistoryInstalled) return;
+  window.__wuwatappoLoginHistoryInstalled = true;
+
   // WebView2 keeps a per-origin form history and suggests earlier values when
   // the official login form is focused. WebKitGTK has no such autofill, so the
   // login window remembers the most recent successfully used login names and
@@ -210,6 +215,9 @@
     menuInput = input;
     menuEntries = filtered;
     activeIndex = -1;
+    // The rebuilt options restart at -1; a previous arrow-key selection must
+    // not leave the input pointing at an option id that no longer exists.
+    input.removeAttribute('aria-activedescendant');
     for (let i = 0; i < filtered.length; i += 1) {
       const option = document.createElement('div');
       option.className = OPTION_CLASS;
@@ -286,13 +294,25 @@
     if (!next || !menu || !menu.contains(next)) closeMenu();
   }
 
+  // The SDK sanitizes the value in its own bubbling input handler, which runs
+  // after this capture listener. Remember the settled value on the next
+  // microtask so history never keeps a raw paste such as "+86 138 0013 8000".
+  function rememberSettledValue(input, field) {
+    Promise.resolve().then(() => {
+      if (fieldFor(input) !== field) return;
+      candidates.set(field.id, normalizeEntry(input.value));
+    });
+  }
+
   function handleInput(event) {
     const field = fieldFor(event.target);
     if (!field) return;
-    candidates.set(field.id, normalizeEntry(event.target.value));
+    const input = event.target;
+    candidates.set(field.id, normalizeEntry(input.value));
     bindSdkEvents();
     if (filling) return;
-    openMenu(event.target, field);
+    openMenu(input, field);
+    rememberSettledValue(input, field);
   }
 
   function handleKeyDown(event) {
@@ -377,12 +397,17 @@
           }
           return;
         }
+        // The echoed username is the canonical account name, which differs
+        // from what was typed whenever the identifier is an email or phone
+        // number (or when the server trims/normalizes case). A successful
+        // login means the value currently in the account field is the one that
+        // worked, so remember that instead of requiring a byte-identical echo.
         const username = normalizeEntry(payload.username);
         const account = candidates.get(ACCOUNT_FIELD.id);
-        if (account && username === account) {
+        if (username && account) {
           rememberEntry(ACCOUNT_FIELD, account);
-          candidates.set(ACCOUNT_FIELD.id, '');
         }
+        candidates.set(ACCOUNT_FIELD.id, '');
       });
     } catch {
       boundEventBus = null;

@@ -83,6 +83,9 @@ pub struct WindowState {
     /// an unchanged kind, so the main loop re-applies this value while the
     /// pointer is inside the shaped region.
     desired_cursor: Mutex<Option<String>>,
+    /// Last cursor error reported by the maintenance loop. Repeated failures
+    /// with the same message would otherwise flood the log at the loop rate.
+    cursor_warning: Mutex<Option<String>>,
 }
 
 impl WindowState {
@@ -186,21 +189,29 @@ fn css_to_logical(app: &AppHandle) -> f64 {
     (webview_scale(app) / tauri_scale).max(f64::EPSILON)
 }
 
+/// Scripts every window depends on: the WebSocket bridge and the platform
+/// shims (cookie storage, relaunch, chest timers, ...).
 fn initialize(label: &str) -> Result<String, String> {
     let mut initialization = format!(
         "{}\n{}",
         include_str!("../../scripts/websocket.js"),
         include_str!("../../scripts/platform.js")
     );
-    if label == "login" {
-        initialization.push('\n');
-        initialization.push_str(include_str!("../../scripts/login-account-history.js"));
-    }
     if label == "main" && cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--self-test")
     {
         initialization.push_str(include_str!("../../scripts/runtime-smoke.js"));
     }
     Ok(initialization)
+}
+
+/// Login-only enhancement, injected as its own script so a top-level failure
+/// in it cannot take down the shared cookie/WebSocket shims.
+fn login_history_script(label: &str) -> &'static str {
+    if label == "login" {
+        include_str!("../../scripts/login-account-history.js")
+    } else {
+        ""
+    }
 }
 
 fn refresh_geometry(app: &AppHandle, label: &str) -> Result<(), String> {
@@ -475,12 +486,36 @@ fn reassert_main_cursor(app: &AppHandle) {
     else {
         return;
     };
-    if let Err(error) = set_native_cursor(app, &kind) {
-        let _ = crate::system::write_message(
-            app,
-            "warn",
-            &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
-        );
+    match set_native_cursor(app, &kind) {
+        Ok(()) => {
+            if let Ok(mut last) = state.cursor_warning.lock() {
+                *last = None;
+            }
+        }
+        Err(error) => {
+            // The command path already logged the first failure; the loop must
+            // not repeat the same message 30 times per second (the log rotates
+            // at 2 MiB).
+            let first_report = state
+                .cursor_warning
+                .lock()
+                .map(|mut last| {
+                    if last.as_deref() == Some(error.as_str()) {
+                        false
+                    } else {
+                        *last = Some(error.clone());
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if first_report {
+                let _ = crate::system::write_message(
+                    app,
+                    "warn",
+                    &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
+                );
+            }
+        }
     }
 }
 
@@ -585,6 +620,7 @@ fn build_window(
         "Wuwa Tappo"
     })
     .initialization_script(initialize(label)?)
+    .initialization_script(login_history_script(label))
     .on_page_load(|window, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
             crate::socket::close_window(window.app_handle(), window.label());
@@ -1584,12 +1620,17 @@ mod tests {
 
     #[test]
     fn login_account_history_is_injected_only_into_the_login_window() {
-        let login = initialize("login").expect("login initialization");
+        let login = login_history_script("login");
         assert!(login.contains("wuwatappo-login-accounts"));
         assert!(login.contains("wuwatappo-login-phones"));
-        let main = initialize("main").expect("main initialization");
-        assert!(!main.contains("wuwatappo-login-accounts"));
-        assert!(!main.contains("wuwatappo-login-phones"));
+        // The enhancement is its own script, never part of the shared
+        // initialization string: a failure there must not disable cookies or
+        // the WebSocket bridge for every window.
+        let shared = initialize("login").expect("login initialization");
+        assert!(!shared.contains("wuwatappo-login-accounts"));
+        assert!(!shared.contains("wuwatappo-login-phones"));
+        assert_eq!(login_history_script("main"), "");
+        assert_eq!(login_history_script("panel"), "");
     }
 
     #[test]
