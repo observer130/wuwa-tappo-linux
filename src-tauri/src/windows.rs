@@ -83,6 +83,9 @@ pub struct WindowState {
     /// an unchanged kind, so the main loop re-applies this value while the
     /// pointer is inside the shaped region.
     desired_cursor: Mutex<Option<String>>,
+    /// Last cursor error reported by the maintenance loop. Repeated failures
+    /// with the same message would otherwise flood the log at the loop rate.
+    cursor_warning: Mutex<Option<String>>,
 }
 
 impl WindowState {
@@ -186,21 +189,29 @@ fn css_to_logical(app: &AppHandle) -> f64 {
     (webview_scale(app) / tauri_scale).max(f64::EPSILON)
 }
 
+/// Scripts every window depends on: the WebSocket bridge and the platform
+/// shims (cookie storage, relaunch, chest timers, ...).
 fn initialize(label: &str) -> Result<String, String> {
     let mut initialization = format!(
         "{}\n{}",
         include_str!("../../scripts/websocket.js"),
         include_str!("../../scripts/platform.js")
     );
-    if label == "login" {
-        initialization.push('\n');
-        initialization.push_str(include_str!("../../scripts/login-account-history.js"));
-    }
     if label == "main" && cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--self-test")
     {
         initialization.push_str(include_str!("../../scripts/runtime-smoke.js"));
     }
     Ok(initialization)
+}
+
+/// Login-only enhancement, injected as its own script so a top-level failure
+/// in it cannot take down the shared cookie/WebSocket shims.
+fn login_history_script(label: &str) -> &'static str {
+    if label == "login" {
+        include_str!("../../scripts/login-account-history.js")
+    } else {
+        ""
+    }
 }
 
 fn refresh_geometry(app: &AppHandle, label: &str) -> Result<(), String> {
@@ -276,27 +287,6 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
             )
         }
     };
-    if mode != 2 {
-        // Witness fast region transitions against the latest pointer sample:
-        // the 33ms poll can step over a 26ms union-then-final churn during a
-        // dock drag release, and a parked pointer needs that uncovered moment
-        // to allow the later region re-entry.
-        if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
-            if !monitor.pointer_inside() {
-                let uncovered = if mode == 0 {
-                    true
-                } else {
-                    match monitor.pointer_sample() {
-                        Some((sample_x, sample_y)) => !main_shape_covers(app, sample_x, sample_y),
-                        None => false,
-                    }
-                };
-                if uncovered {
-                    monitor.mark_pointer_uncovered();
-                }
-            }
-        }
-    }
     let mut shape = state.shape.lock().map_err(err)?;
     if shape.is_none() {
         *shape = Some(crate::shape::InputShape::for_window(&main_window(app)?)?);
@@ -307,6 +297,26 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         .apply(&rectangles);
     match &result {
         Ok(()) => {
+            if mode != 2 {
+                // Witness fast region transitions against the latest pointer
+                // sample: the 33ms poll can step over a 26ms union-then-final
+                // churn during a dock drag release, and a parked pointer needs
+                // that uncovered moment to allow the later region re-entry.
+                // The witness is taken after a successful apply and without
+                // consulting the inside flag: the leave notification for a
+                // shape change reaches the GTK thread after the apply, so
+                // gating on it would drop exactly these transitions.
+                if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
+                    let uncovered = crate::input::shape_uncovered(
+                        mode == 0,
+                        monitor.pointer_sample(),
+                        |x, y| main_shape_covers(app, x, y),
+                    );
+                    if uncovered {
+                        monitor.mark_pointer_uncovered();
+                    }
+                }
+            }
             let signature = (mode, rectangles.len());
             let changed = state
                 .shape_last
@@ -476,25 +486,57 @@ fn reassert_main_cursor(app: &AppHandle) {
     else {
         return;
     };
-    if let Err(error) = set_native_cursor(app, &kind) {
-        let _ = crate::system::write_message(
-            app,
-            "warn",
-            &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
-        );
+    match set_native_cursor(app, &kind) {
+        Ok(()) => {
+            if let Ok(mut last) = state.cursor_warning.lock() {
+                *last = None;
+            }
+        }
+        Err(error) => {
+            // The command path already logged the first failure; the loop must
+            // not repeat the same message 30 times per second (the log rotates
+            // at 2 MiB).
+            let first_report = state
+                .cursor_warning
+                .lock()
+                .map(|mut last| {
+                    if last.as_deref() == Some(error.as_str()) {
+                        false
+                    } else {
+                        *last = Some(error.clone());
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if first_report {
+                let _ = crate::system::write_message(
+                    app,
+                    "warn",
+                    &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
+                );
+            }
+        }
     }
 }
 
 /// Apply a frontend cursor command: update the native cursor, remember the
 /// kind for the maintenance loop, and point the stylesheet at the same kind.
 fn apply_cursor_command(app: &AppHandle, kind: &str) -> Result<(), String> {
-    set_native_cursor(app, kind)?;
+    // Remember and mirror the intent before touching the native cursor. The
+    // 33ms maintenance loop retries the native side, and the stylesheet has to
+    // follow the commanded kind even when this theme cannot resolve it;
+    // otherwise WebKit keeps computing its own cursor and the two writers
+    // disagree again.
     if let Some(state) = app.try_state::<WindowState>() {
         if let Ok(mut desired) = state.desired_cursor.lock() {
             *desired = Some(kind.to_string());
         }
     }
     mirror_cursor_to_stylesheet(app, kind);
+    if let Err(error) = set_native_cursor(app, kind) {
+        let message = format!("[CURSOR] native cursor '{kind}' failed: {error}");
+        let _ = crate::system::write_message(app, "warn", &message);
+    }
     Ok(())
 }
 
@@ -578,6 +620,7 @@ fn build_window(
         "Wuwa Tappo"
     })
     .initialization_script(initialize(label)?)
+    .initialization_script(login_history_script(label))
     .on_page_load(|window, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
             crate::socket::close_window(window.app_handle(), window.label());
@@ -1577,12 +1620,17 @@ mod tests {
 
     #[test]
     fn login_account_history_is_injected_only_into_the_login_window() {
-        let login = initialize("login").expect("login initialization");
+        let login = login_history_script("login");
         assert!(login.contains("wuwatappo-login-accounts"));
         assert!(login.contains("wuwatappo-login-phones"));
-        let main = initialize("main").expect("main initialization");
-        assert!(!main.contains("wuwatappo-login-accounts"));
-        assert!(!main.contains("wuwatappo-login-phones"));
+        // The enhancement is its own script, never part of the shared
+        // initialization string: a failure there must not disable cookies or
+        // the WebSocket bridge for every window.
+        let shared = initialize("login").expect("login initialization");
+        assert!(!shared.contains("wuwatappo-login-accounts"));
+        assert!(!shared.contains("wuwatappo-login-phones"));
+        assert_eq!(login_history_script("main"), "");
+        assert_eq!(login_history_script("panel"), "");
     }
 
     #[test]
