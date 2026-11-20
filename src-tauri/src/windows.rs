@@ -276,27 +276,6 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
             )
         }
     };
-    if mode != 2 {
-        // Witness fast region transitions against the latest pointer sample:
-        // the 33ms poll can step over a 26ms union-then-final churn during a
-        // dock drag release, and a parked pointer needs that uncovered moment
-        // to allow the later region re-entry.
-        if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
-            if !monitor.pointer_inside() {
-                let uncovered = if mode == 0 {
-                    true
-                } else {
-                    match monitor.pointer_sample() {
-                        Some((sample_x, sample_y)) => !main_shape_covers(app, sample_x, sample_y),
-                        None => false,
-                    }
-                };
-                if uncovered {
-                    monitor.mark_pointer_uncovered();
-                }
-            }
-        }
-    }
     let mut shape = state.shape.lock().map_err(err)?;
     if shape.is_none() {
         *shape = Some(crate::shape::InputShape::for_window(&main_window(app)?)?);
@@ -307,6 +286,26 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         .apply(&rectangles);
     match &result {
         Ok(()) => {
+            if mode != 2 {
+                // Witness fast region transitions against the latest pointer
+                // sample: the 33ms poll can step over a 26ms union-then-final
+                // churn during a dock drag release, and a parked pointer needs
+                // that uncovered moment to allow the later region re-entry.
+                // The witness is taken after a successful apply and without
+                // consulting the inside flag: the leave notification for a
+                // shape change reaches the GTK thread after the apply, so
+                // gating on it would drop exactly these transitions.
+                if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
+                    let uncovered = crate::input::shape_uncovered(
+                        mode == 0,
+                        monitor.pointer_sample(),
+                        |x, y| main_shape_covers(app, x, y),
+                    );
+                    if uncovered {
+                        monitor.mark_pointer_uncovered();
+                    }
+                }
+            }
             let signature = (mode, rectangles.len());
             let changed = state
                 .shape_last
@@ -488,13 +487,21 @@ fn reassert_main_cursor(app: &AppHandle) {
 /// Apply a frontend cursor command: update the native cursor, remember the
 /// kind for the maintenance loop, and point the stylesheet at the same kind.
 fn apply_cursor_command(app: &AppHandle, kind: &str) -> Result<(), String> {
-    set_native_cursor(app, kind)?;
+    // Remember and mirror the intent before touching the native cursor. The
+    // 33ms maintenance loop retries the native side, and the stylesheet has to
+    // follow the commanded kind even when this theme cannot resolve it;
+    // otherwise WebKit keeps computing its own cursor and the two writers
+    // disagree again.
     if let Some(state) = app.try_state::<WindowState>() {
         if let Ok(mut desired) = state.desired_cursor.lock() {
             *desired = Some(kind.to_string());
         }
     }
     mirror_cursor_to_stylesheet(app, kind);
+    if let Err(error) = set_native_cursor(app, kind) {
+        let message = format!("[CURSOR] native cursor '{kind}' failed: {error}");
+        let _ = crate::system::write_message(app, "warn", &message);
+    }
     Ok(())
 }
 

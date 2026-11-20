@@ -81,12 +81,15 @@ struct MonitorState {
     /// GTK thread reads it in `apply_main_input_shape` to witness region
     /// transitions the 33ms poll can step over.
     pointer_css_sample: Mutex<Option<(f64, f64)>>,
-    /// Whether, since the last GDK leave, the input shape was observed to
-    /// not cover the pointer sample. A region that re-appears around a
-    /// parked pointer only re-enters after such an uncovered moment: a
-    /// leave caused by a physical exit leaves the frozen sample inside the
-    /// unchanged pet rect, and that sample must not re-open the hover.
-    pointer_uncovered_since_leave: AtomicBool,
+    /// Motion epoch of the last observed moment when the input shape did not
+    /// cover the pointer sample. A region that re-appears around a parked
+    /// pointer only re-enters after such an uncovered moment: a leave caused
+    /// by a physical exit leaves the frozen sample inside the unchanged pet
+    /// rect, and that sample must not re-open the hover. The witness is
+    /// tagged with the motion epoch instead of being cleared on the next
+    /// leave, so a transition that finishes before the leave reaches the GTK
+    /// thread still counts, while a physical move invalidates it.
+    pointer_uncovered_motion_epoch: AtomicU64,
     pointer_emit_lock: Mutex<()>,
     error: Mutex<Option<String>>,
     member_resolver: Mutex<Option<MemberResolver>>,
@@ -103,6 +106,15 @@ impl MonitorState {
         if let Ok(mut error) = self.error.lock() {
             *error = Some(message);
         }
+    }
+
+    /// Tag the uncovered witness with the current motion epoch. See
+    /// `pointer_uncovered_motion_epoch`.
+    fn mark_pointer_uncovered(&self) {
+        self.pointer_uncovered_motion_epoch.store(
+            self.pointer_motion_epoch.load(Ordering::Acquire),
+            Ordering::Release,
+        );
     }
 
     fn status(&self) -> InputStatus {
@@ -148,7 +160,7 @@ impl InputMonitor {
                 pointer_motion_epoch: AtomicU64::new(0),
                 pointer_leave_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
                 pointer_css_sample: Mutex::new(None),
-                pointer_uncovered_since_leave: AtomicBool::new(false),
+                pointer_uncovered_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
                 pointer_emit_lock: Mutex::new(()),
                 error: Mutex::new(None),
                 member_resolver: Mutex::new(None),
@@ -200,11 +212,11 @@ impl InputMonitor {
 
     /// Witness that the current input shape does not cover the pointer sample.
     /// Called from `apply_main_input_shape` and from the polling loop; a region
-    /// that later re-covers a parked pointer may only re-enter after this.
+    /// that later re-covers a parked pointer may only re-enter after this. The
+    /// witness is tagged with the motion epoch: a later physical move makes it
+    /// stale and the next leave requires a fresh transition.
     pub(crate) fn mark_pointer_uncovered(&self) {
-        self.state
-            .pointer_uncovered_since_leave
-            .store(true, Ordering::Release);
+        self.state.mark_pointer_uncovered();
     }
 
     /// The pointer entered the shaped input region. Ask the polling loop to
@@ -225,12 +237,10 @@ impl InputMonitor {
     pub fn mark_pointer_left(&self) {
         self.state.pointer_inside.store(false, Ordering::Release);
         self.state.pointer_resync.store(false, Ordering::Release);
-        // A new observation window: until an uncovered moment is witnessed
-        // the frozen sample is assumed to sit inside the unchanged pet rect,
-        // and a region that re-covers it must not re-arm the inside state.
-        self.state
-            .pointer_uncovered_since_leave
-            .store(false, Ordering::Release);
+        // The uncovered witness is not cleared here: a region churn may be
+        // applied before the leave reaches this thread, and that transition
+        // must still count. It is tagged with the motion epoch instead, so a
+        // physical move invalidates it before the next leave is evaluated.
         // Snapshot the motion counter. While it stays unchanged the pointer
         // has not moved since this leave, so XWayland's frozen sample equals
         // the true position and can prove a later region re-entry.
@@ -748,28 +758,44 @@ fn update_reenter_proof(state: &MonitorState, app: &AppHandle, css_x: f64, css_y
         // Witness an uncovered sample while outside: this leave window has
         // seen the shape stop covering the pointer, so a later re-covering
         // may re-enter.
-        state
-            .pointer_uncovered_since_leave
-            .store(true, Ordering::Release);
+        state.mark_pointer_uncovered();
     }
     pointer_reenter_proven(
         state.pointer_motion_epoch.load(Ordering::Acquire),
         state.pointer_leave_motion_epoch.load(Ordering::Acquire),
         covered,
-        state.pointer_uncovered_since_leave.load(Ordering::Acquire),
+        state.pointer_uncovered_motion_epoch.load(Ordering::Acquire),
     )
+}
+
+/// Whether a shape transition stops covering the pointer sample, i.e. whether
+/// the region moved away from the pointer instead of the pointer moving away.
+/// `empty` is the mode-0 ("ignore all input") transition, which covers nothing
+/// by definition; `covers` mirrors the freshly applied mode-1 shape.
+pub(crate) fn shape_uncovered(
+    empty: bool,
+    sample: Option<(f64, f64)>,
+    covers: impl Fn(f64, f64) -> bool,
+) -> bool {
+    if empty {
+        return true;
+    }
+    match sample {
+        Some((x, y)) => !covers(x, y),
+        None => false,
+    }
 }
 
 fn pointer_reenter_proven(
     motion_epoch: u64,
     leave_motion_epoch: u64,
     covered: bool,
-    uncovered_since_leave: bool,
+    uncovered_motion_epoch: u64,
 ) -> bool {
     leave_motion_epoch != POINTER_LEAVE_EPOCH_UNSET
         && motion_epoch == leave_motion_epoch
         && covered
-        && uncovered_since_leave
+        && uncovered_motion_epoch == leave_motion_epoch
 }
 
 /// The official frontend keeps the shortcut table in the native layer. The same
@@ -1183,83 +1209,86 @@ mod tests {
                 .load(Ordering::Acquire),
             3
         );
-        // No motion since the leave, the sample landed on the rebuilt region,
-        // and the shape went through an uncovered moment: the sample equals
-        // the true position, so the re-entry proof holds.
-        assert!(pointer_reenter_proven(
-            monitor.state.pointer_motion_epoch.load(Ordering::Acquire),
+    }
+
+    #[test]
+    fn pointer_uncovered_witness_is_tagged_with_the_motion_epoch() {
+        let monitor = InputMonitor::new();
+        assert_eq!(
             monitor
                 .state
-                .pointer_leave_motion_epoch
+                .pointer_uncovered_motion_epoch
                 .load(Ordering::Acquire),
-            true,
-            true
-        ));
-        // The same frozen sample without an uncovered moment is a plain
-        // physical exit: the region never stopped covering the frozen point.
-        assert!(!pointer_reenter_proven(
-            monitor.state.pointer_motion_epoch.load(Ordering::Acquire),
-            monitor
-                .state
-                .pointer_leave_motion_epoch
-                .load(Ordering::Acquire),
-            true,
-            false
-        ));
-        // The next pointer motion breaks the proof until the next leave.
+            POINTER_LEAVE_EPOCH_UNSET
+        );
         monitor
             .state
             .pointer_motion_epoch
-            .fetch_add(1, Ordering::AcqRel);
-        assert!(!pointer_reenter_proven(
-            monitor.state.pointer_motion_epoch.load(Ordering::Acquire),
+            .store(4, Ordering::Release);
+        monitor.mark_pointer_uncovered();
+        assert_eq!(
             monitor
                 .state
-                .pointer_leave_motion_epoch
+                .pointer_uncovered_motion_epoch
                 .load(Ordering::Acquire),
-            true,
-            true
-        ));
-    }
-
-    #[test]
-    fn pointer_uncovered_witness_resets_on_the_next_leave() {
-        let monitor = InputMonitor::new();
-        assert!(!monitor
+            4
+        );
+        // A leave does not erase the witness: a region churn may be applied
+        // before the leave reaches the GTK thread, and that transition still
+        // happened after the last physical motion.
+        monitor
             .state
-            .pointer_uncovered_since_leave
-            .load(Ordering::Acquire));
-        monitor.mark_pointer_uncovered();
-        assert!(monitor
-            .state
-            .pointer_uncovered_since_leave
-            .load(Ordering::Acquire));
-        // A new leave opens a new observation window.
+            .pointer_motion_epoch
+            .store(9, Ordering::Release);
         monitor.mark_pointer_left();
-        assert!(!monitor
-            .state
-            .pointer_uncovered_since_leave
-            .load(Ordering::Acquire));
+        assert_eq!(
+            monitor
+                .state
+                .pointer_uncovered_motion_epoch
+                .load(Ordering::Acquire),
+            4
+        );
+        // After a real move the old witness cannot prove the re-entry; a new
+        // uncovered moment is tagged with the new epoch and does.
+        assert!(!pointer_reenter_proven(9, 9, true, 4));
+        monitor.mark_pointer_uncovered();
+        assert!(pointer_reenter_proven(9, 9, true, 9));
     }
 
     #[test]
-    fn pointer_reenter_requires_a_leave_coverage_and_an_uncovered_moment() {
+    fn pointer_reenter_requires_a_leave_coverage_and_a_matching_witness() {
         // Before any leave the sentinel epoch blocks the check: a boot-time
         // frozen sample may predate the window and must not re-arm inside.
         assert!(!pointer_reenter_proven(
             0,
             POINTER_LEAVE_EPOCH_UNSET,
             true,
-            true
+            0
         ));
-        assert!(!pointer_reenter_proven(0, 0, false, true));
-        // A physical exit freezes inside the unchanged pet rect: no
-        // uncovered moment means the region never rebuilt under the pointer.
-        assert!(!pointer_reenter_proven(0, 0, true, false));
-        assert!(pointer_reenter_proven(0, 0, true, true));
+        assert!(!pointer_reenter_proven(0, 0, false, 0));
+        // A physical exit freezes inside the unchanged pet rect: no uncovered
+        // moment shares the leave epoch, so the shape never rebuilt under the
+        // pointer and the sample must not re-open the hover.
+        assert!(!pointer_reenter_proven(0, 0, true, 1));
+        assert!(pointer_reenter_proven(0, 0, true, 0));
         // Motion after the leave: the sample may be stale, so only a real
         // crossing event may re-arm the inside state.
-        assert!(!pointer_reenter_proven(1, 0, true, true));
+        assert!(!pointer_reenter_proven(1, 0, true, 0));
+        // A witness recorded before the last move proves nothing either.
+        assert!(!pointer_reenter_proven(2, 2, true, 1));
+    }
+
+    #[test]
+    fn shape_uncovered_compares_the_sample_against_the_applied_shape() {
+        let pet = |x: f64, y: f64| (100.0..200.0).contains(&x) && (100.0..200.0).contains(&y);
+        // Mode 0 ignores all input and covers nothing, even without a sample.
+        assert!(shape_uncovered(true, None, pet));
+        // Mode 1 without a sample cannot witness anything yet.
+        assert!(!shape_uncovered(false, None, pet));
+        // A sample outside the new shape is the region moving off the pointer.
+        assert!(shape_uncovered(false, Some((10.0, 120.0)), pet));
+        // A sample inside the new shape is the pointer staying put.
+        assert!(!shape_uncovered(false, Some((150.0, 150.0)), pet));
     }
 
     #[test]
@@ -1319,7 +1348,7 @@ mod tests {
             pointer_motion_epoch: AtomicU64::new(0),
             pointer_leave_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
             pointer_css_sample: Mutex::new(None),
-            pointer_uncovered_since_leave: AtomicBool::new(false),
+            pointer_uncovered_motion_epoch: AtomicU64::new(POINTER_LEAVE_EPOCH_UNSET),
             pointer_emit_lock: Mutex::new(()),
             error: Mutex::new(Some("input_monitor_not_running".into())),
             member_resolver: Mutex::new(None),
