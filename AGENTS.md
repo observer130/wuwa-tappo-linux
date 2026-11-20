@@ -48,10 +48,10 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 1. 确认 `dev` 已通过发布前 review 与“验证”小节的全部检查。
 2. 从 `dev` 拉 `release/v<version>`，在同一个提交里提升版本号：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`。
-3. 按 `docs/building.md` 构建 release 二进制并运行 `npm run package`，核对 `dist/wuwa-tappo-linux-<version>-x86_64.tar.gz` 与 `.sha256`。
+3. 按 `docs/building.md` 构建 release 二进制并运行 `npm run package`，用生成的 `.sha256` 在本地核对 `dist/wuwa-tappo-linux-<version>-x86_64.tar.gz`。
 4. 按下面的格式编写 `dist/RELEASE_NOTES-v<version>.md`；`dist/` 是本地构建产物，不进入 git。
 5. `release/v<version>` 以 `--no-ff` 合入 `dev`，`dev` 以 `--no-ff` 合入 `main`；在 `main` 的发布提交上创建 annotated tag `v<version>`，推送 `main` 与 tag。
-6. 使用 `gh release create v<version> <tarball> <sha256> --title "v<version>" --notes-file dist/RELEASE_NOTES-v<version>.md` 创建 GitHub Release；预发布加 `--prerelease`。
+6. 使用 `gh release create v<version> <tarball> --title "v<version>" --notes-file dist/RELEASE_NOTES-v<version>.md` 创建 GitHub Release；只上传 tar.gz，不上传 `.sha256` 资产；预发布加 `--prerelease`。
 
 Release Notes 文本结构规定如下：
 

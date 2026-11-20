@@ -90,10 +90,14 @@ npm run test:rust
 | 补丁 | 目的 |
 | --- | --- |
 | `patchDomesticSdkUrls` | 把官方协议相对 SDK 地址改为 HTTPS，适配 `tauri://localhost` |
+| `patchCookieStorage` | WebKitGTK 不向 `tauri://` 暴露 JavaScript Cookie；把登录 token 镜像到同源 LocalStorage，重启后仍能恢复登录 |
 | `patchLoginReady` | 登录窗口监听器挂载后回报 `login_window_ready`，消除首帧竞态 |
+| `patchRelaunch` | 重启改走原生命令，避免 process 插件在主线程同步拆除 WebKitGTK 导致卡死 |
+| `patchSessionRestore` | 冷启动网络未就绪时对传输失败重试 3 次；鉴权拒绝仍立即登出 |
 | `patchChestTimers` | 避免宝箱按钮停留在加载/灰色状态，并保留悬停与“总是展示宝箱”的倒计时行为 |
 | `patchAbout` | 关于页标注“Linux 社区移植版”，并把原 Windows 配置改为二级标题 |
 | `patchIndexLanguage` | `<html lang>` 设为 `zh-CN` |
+| `patchPetCursor` | 把前端命令的光标 kind 镜像进 CSS 自定义属性，让 WebKitGTK 的重算结果与原生光标一致，停止桌宠手形闪烁 |
 
 每个函数都会校验锚点数量，锚点不匹配时抛错。官方升级后先运行 `npm test` 与 `npm run prepare:frontend`，按报错更新锚点，不要静默跳过。
 

@@ -5025,7 +5025,7 @@ dependencies = [
 
 [[package]]
 name = "wuwatappo-linux"
-version = "1.0.4-2"
+version = "1.0.4-3"
 dependencies = [
  "futures-util",
  "gdkx11",

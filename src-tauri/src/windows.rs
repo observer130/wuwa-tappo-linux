@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, RwLock,
     },
 };
@@ -78,6 +78,23 @@ pub struct WindowState {
     webview_scale: RwLock<Option<f64>>,
     shape: Mutex<Option<crate::shape::InputShape>>,
     shape_last: Mutex<Option<(u8, usize)>>,
+    /// The cursor kind last commanded by the frontend. WebKitGTK re-asserts
+    /// its DOM-derived cursor on state changes and the frontend never re-sends
+    /// an unchanged kind, so the main loop re-applies this value while the
+    /// pointer is inside the shaped region.
+    desired_cursor: Mutex<Option<String>>,
+    /// Last cursor error reported by the maintenance loop. Repeated failures
+    /// with the same message would otherwise flood the log at the loop rate.
+    cursor_warning: Mutex<Option<String>>,
+}
+
+impl WindowState {
+    /// Whether the frontend temporarily swallowed the whole window (dock drag
+    /// or native click forwarding). Live pointer coordinates are valid then even
+    /// when the pointer is outside the normal hit regions.
+    pub(crate) fn swallow_active(&self) -> bool {
+        self.hit.read().map(|hit| hit.swallow).unwrap_or(false)
+    }
 }
 
 #[derive(Default)]
@@ -97,8 +114,15 @@ struct HitState {
     swallow: bool,
 }
 
+/// Whether the shape must drop every input rectangle. Only the monitor latch
+/// qualifies. The frontend's `set_main_force_cursor_ignore(true)` marks the
+/// fullscreen shell as passthrough and relies on its global hook stream,
+/// which reports true pointer coordinates even outside the window, to deliver
+/// the next interaction. Wayland has no equivalent stream, so the XShape
+/// region stays interactive — it is the only source of pointer truth over the
+/// pet — and the flag is kept for bookkeeping only.
 fn ignores_input(hit: &HitState) -> bool {
-    hit.force_ignore || hit.monitor_ignore
+    hit.monitor_ignore
 }
 
 fn apply_hit_update(hit: &mut HitState, update: HitUpdate) -> (usize, usize) {
@@ -165,6 +189,8 @@ fn css_to_logical(app: &AppHandle) -> f64 {
     (webview_scale(app) / tauri_scale).max(f64::EPSILON)
 }
 
+/// Scripts every window depends on: the WebSocket bridge and the platform
+/// shims (cookie storage, relaunch, chest timers, ...).
 fn initialize(label: &str) -> Result<String, String> {
     let mut initialization = format!(
         "{}\n{}",
@@ -176,6 +202,16 @@ fn initialize(label: &str) -> Result<String, String> {
         initialization.push_str(include_str!("../../scripts/runtime-smoke.js"));
     }
     Ok(initialization)
+}
+
+/// Login-only enhancement, injected as its own script so a top-level failure
+/// in it cannot take down the shared cookie/WebSocket shims.
+fn login_history_script(label: &str) -> &'static str {
+    if label == "login" {
+        include_str!("../../scripts/login-account-history.js")
+    } else {
+        ""
+    }
 }
 
 fn refresh_geometry(app: &AppHandle, label: &str) -> Result<(), String> {
@@ -261,6 +297,26 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         .apply(&rectangles);
     match &result {
         Ok(()) => {
+            if mode != 2 {
+                // Witness fast region transitions against the latest pointer
+                // sample: the 33ms poll can step over a 26ms union-then-final
+                // churn during a dock drag release, and a parked pointer needs
+                // that uncovered moment to allow the later region re-entry.
+                // The witness is taken after a successful apply and without
+                // consulting the inside flag: the leave notification for a
+                // shape change reaches the GTK thread after the apply, so
+                // gating on it would drop exactly these transitions.
+                if let Some(monitor) = app.try_state::<crate::input::InputMonitor>() {
+                    let uncovered = crate::input::shape_uncovered(
+                        mode == 0,
+                        monitor.pointer_sample(),
+                        |x, y| main_shape_covers(app, x, y),
+                    );
+                    if uncovered {
+                        monitor.mark_pointer_uncovered();
+                    }
+                }
+            }
             let signature = (mode, rectangles.len());
             let changed = state
                 .shape_last
@@ -286,6 +342,31 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         }
     }
     result
+}
+
+/// Whether the current main-window input shape covers the given window
+/// relative CSS coordinate. Mirrors the mode-1 branch of
+/// `apply_main_input_shape` so the input worker can detect a region that
+/// appeared around a stationary pointer — KWin generates no EnterNotify for
+/// that case.
+pub(crate) fn main_shape_covers(app: &AppHandle, css_x: f64, css_y: f64) -> bool {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return false;
+    };
+    let Ok(hit) = state.hit.read() else {
+        return false;
+    };
+    if hit.swallow || hit.monitor_ignore {
+        return false;
+    }
+    let regions = if hit.window_passthrough {
+        &hit.input_regions
+    } else {
+        &hit.regions
+    };
+    regions
+        .iter()
+        .any(|region| region.is_valid() && region.contains(css_x, css_y))
 }
 
 /// The shaped X11 window receives crossing notifications when the pointer
@@ -331,37 +412,193 @@ fn install_crossing_handlers(widget: &gtk::Widget, app: &AppHandle) {
     }
 }
 
+/// Cursor names vary by theme and server age: bare Xvfb resolves "grab" but
+/// not "default", older servers only know the core-font names. Try the CSS
+/// name first (the official Windows glyph), then the traditional aliases.
+fn resolve_cursor(display: &gtk::gdk::Display, kind: &str) -> Option<gtk::gdk::Cursor> {
+    let candidates: &[&str] = match kind {
+        "pointer" => &["pointer", "hand2", "hand"],
+        "grab" => &["grab", "closed-hand", "hand2"],
+        "grabbing" => &["grabbing", "closed-hand", "hand2"],
+        _ => &["default", "left_ptr", "arrow"],
+    };
+    candidates
+        .iter()
+        .find_map(|name| gtk::gdk::Cursor::from_name(display, name))
+}
+
+/// The frontend drives the dock pet's hover cursor through this command: the
+/// CSS has no cursor rule on the pet body (only the room cats and the chest
+/// buttons do), and on Windows the global input hook makes the window
+/// cursor authoritative. On X11 the displayed cursor is the one defined by
+/// the deepest window under the pointer, so a toplevel-only update is always
+/// overridden by the WebKit view's own cursor. Walk the whole GDK window
+/// tree and set the cursor on every layer, the WebKit view included.
+fn set_native_cursor(app: &AppHandle, kind: &str) -> Result<(), String> {
+    let window = main_window(app)?;
+    let cursor = match kind {
+        "pointer" => tauri::CursorIcon::Hand,
+        "grab" => tauri::CursorIcon::Grab,
+        "grabbing" => tauri::CursorIcon::Grabbing,
+        _ => tauri::CursorIcon::Default,
+    };
+    window.set_cursor_icon(cursor).map_err(err)?;
+    let gtk_window = window.gtk_window().map_err(err)?;
+    let gdk_window = gtk_window.window().ok_or("Main window is not realized")?;
+    let display = gtk_window.display();
+    let cursor =
+        resolve_cursor(&display, kind).ok_or_else(|| format!("Unknown cursor kind '{kind}'"))?;
+    set_cursor_tree(&gdk_window, Some(&cursor));
+    Ok(())
+}
+
+fn set_cursor_tree(gdk_window: &gtk::gdk::Window, cursor: Option<&gtk::gdk::Cursor>) {
+    gdk_window.set_cursor(cursor);
+    for child in gdk_window.children() {
+        set_cursor_tree(&child, cursor);
+    }
+}
+
+/// Re-apply the frontend-commanded cursor on the main window's GDK tree while
+/// the pointer is inside the shaped region. WebKitGTK recomputes its
+/// DOM-derived cursor on state changes (hover UI mounting, CSS transitions)
+/// and asserts it on the view's window, silently overwriting the tree walk
+/// done for the original command; on Windows the global hook keeps feeding
+/// moves and `SetCursor` is window-global, but on X11 the frontend's `er`
+/// latch never re-sends an unchanged kind, so native maintenance is the only
+/// writer that can win. Runs on the main GTK loop, which also keeps it
+/// working when the evdev monitor is unavailable.
+fn reassert_main_cursor(app: &AppHandle) {
+    let inside = app
+        .try_state::<crate::input::InputMonitor>()
+        .is_some_and(|monitor| monitor.pointer_inside());
+    if !inside {
+        return;
+    }
+    let Some(state) = app.try_state::<WindowState>() else {
+        return;
+    };
+    let Some(kind) = state
+        .desired_cursor
+        .lock()
+        .ok()
+        .and_then(|desired| desired.clone())
+    else {
+        return;
+    };
+    match set_native_cursor(app, &kind) {
+        Ok(()) => {
+            if let Ok(mut last) = state.cursor_warning.lock() {
+                *last = None;
+            }
+        }
+        Err(error) => {
+            // The command path already logged the first failure; the loop must
+            // not repeat the same message 30 times per second (the log rotates
+            // at 2 MiB).
+            let first_report = state
+                .cursor_warning
+                .lock()
+                .map(|mut last| {
+                    if last.as_deref() == Some(error.as_str()) {
+                        false
+                    } else {
+                        *last = Some(error.clone());
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if first_report {
+                let _ = crate::system::write_message(
+                    app,
+                    "warn",
+                    &format!("[CURSOR] re-assert '{kind}' failed: {error}"),
+                );
+            }
+        }
+    }
+}
+
+/// Apply a frontend cursor command: update the native cursor, remember the
+/// kind for the maintenance loop, and point the stylesheet at the same kind.
+fn apply_cursor_command(app: &AppHandle, kind: &str) -> Result<(), String> {
+    // Remember and mirror the intent before touching the native cursor. The
+    // 33ms maintenance loop retries the native side, and the stylesheet has to
+    // follow the commanded kind even when this theme cannot resolve it;
+    // otherwise WebKit keeps computing its own cursor and the two writers
+    // disagree again.
+    if let Some(state) = app.try_state::<WindowState>() {
+        if let Ok(mut desired) = state.desired_cursor.lock() {
+            *desired = Some(kind.to_string());
+        }
+    }
+    mirror_cursor_to_stylesheet(app, kind);
+    if let Err(error) = set_native_cursor(app, kind) {
+        let message = format!("[CURSOR] native cursor '{kind}' failed: {error}");
+        let _ = crate::system::write_message(app, "warn", &message);
+    }
+    Ok(())
+}
+
+/// Mirror the commanded kind into the stylesheet custom property that the dock
+/// pet subtree resolves its cursor from. WebKitGTK re-derives the cursor from
+/// CSS for the element under the pointer on every move, so a stylesheet that
+/// disagrees with the native cursor produces two competing kinds and the pet
+/// flickers. The official frontend already commands the right kind per
+/// position (hand while dragging is enabled, arrow once it is disabled,
+/// pointer over the chest); the stylesheet follows that value instead of
+/// hard-coding one.
+fn mirror_cursor_to_stylesheet(app: &AppHandle, kind: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let script =
+        format!("document.documentElement.style.setProperty('--wuwa-pet-cursor','{kind}')");
+    if let Err(error) = window.eval(&script) {
+        let _ = crate::system::write_message(
+            app,
+            "warn",
+            &format!("[CURSOR] mirror '{kind}' into the stylesheet failed: {error}"),
+        );
+    }
+}
+
+/// Re-apply the mirrored kind so the stylesheet recovers the value after the
+/// frontend reloads its document (login, session restore), which drops the
+/// inline property while the commanded kind is still latched natively.
+fn resync_stylesheet_cursor(app: &AppHandle) {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return;
+    };
+    let Some(kind) = state
+        .desired_cursor
+        .lock()
+        .ok()
+        .and_then(|desired| desired.clone())
+    else {
+        return;
+    };
+    mirror_cursor_to_stylesheet(app, &kind);
+}
+
 /// A swallow (native click forwarding or dock drag) temporarily makes the whole
 /// window interactive. A leave then means the pointer left the window, not the
 /// pet, and feeding a synthetic position into the official drag handler would
 /// teleport the dock. Only the region-shaped state reports a pet hover leaving.
 fn emit_pointer_leave(app: &AppHandle) {
-    let swallowed = app
+    if app
         .try_state::<WindowState>()
-        .and_then(|state| state.hit.read().ok().map(|hit| hit.swallow))
-        .unwrap_or(false);
-    if swallowed {
+        .is_some_and(|state| state.swallow_active())
+    {
         return;
     }
-    // The official frontend converts the payload with its own cached window
-    // origin/scale, so derive the out-of-region position from the live window
-    // instead of assuming the window sits at a non-negative screen position.
-    let (origin_x, origin_y, tauri_scale) = main_window(app)
-        .ok()
-        .map(|window| {
-            let scale = window
-                .scale_factor()
-                .ok()
-                .filter(|scale| scale.is_finite() && *scale > 0.0)
-                .unwrap_or(1.0);
-            match window.inner_position().ok() {
-                Some(position) => (position.x as f64, position.y as f64, scale),
-                None => (0.0, 0.0, scale),
-            }
-        })
-        .unwrap_or((0.0, 0.0, 1.0));
-    let payload = crate::input::pointer_leave_position(origin_x, origin_y, tauri_scale);
-    let _ = app.emit("mouse-move", payload);
+    let payload = crate::input::pointer_leave_payload(app);
+    match app.try_state::<crate::input::InputMonitor>() {
+        Some(monitor) => monitor.emit_pointer_move(app, payload),
+        None => {
+            let _ = app.emit("mouse-move", payload);
+        }
+    }
 }
 
 fn build_window(
@@ -383,6 +620,7 @@ fn build_window(
         "Wuwa Tappo"
     })
     .initialization_script(initialize(label)?)
+    .initialization_script(login_history_script(label))
     .on_page_load(|window, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
             crate::socket::close_window(window.app_handle(), window.label());
@@ -1000,11 +1238,23 @@ pub fn dispatch(
             apply_main_input_shape(app)?;
         }
         "set_main_force_cursor_ignore" => {
-            state.hit.write().map_err(err)?.force_ignore = args
+            let enabled = args
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or("Missing enabled state")?;
-            apply_main_input_shape(app)?;
+            // Bookkeeping only: the shape stays interactive (see
+            // `ignores_input`). A later hit-region sync clears the flag via
+            // `apply_hit_update`.
+            let changed = {
+                let mut hit = state.hit.write().map_err(err)?;
+                let changed = hit.force_ignore != enabled;
+                hit.force_ignore = enabled;
+                changed
+            };
+            if changed {
+                let message = format!("[SHAPE] force_ignore={enabled} (regions kept)");
+                let _ = crate::system::write_message(app, "info", &message);
+            }
         }
         "set_main_swallow_mouse" => {
             let enabled = args
@@ -1146,14 +1396,10 @@ pub fn dispatch(
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or("default");
-            let cursor = match kind {
-                "pointer" => tauri::CursorIcon::Hand,
-                "grab" => tauri::CursorIcon::Grab,
-                "grabbing" => tauri::CursorIcon::Grabbing,
-                "default" => tauri::CursorIcon::Default,
-                _ => return Err("Unsupported cursor".into()),
-            };
-            main_window(app)?.set_cursor_icon(cursor).map_err(err)?;
+            if !matches!(kind, "default" | "pointer" | "grab" | "grabbing") {
+                return Err("Unsupported cursor".into());
+            }
+            apply_cursor_command(app, kind)?;
         }
         "ensure_main_taskbar_icon" => {
             main_window(app)?.set_skip_taskbar(false).map_err(err)?;
@@ -1296,6 +1542,23 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                 .read()
                 .is_ok_and(|regions| regions.values().any(|region| region.contains(x, y)))
         })?;
+    // Cursor maintenance: WebKitGTK re-asserts its DOM-derived cursor on state
+    // changes and the frontend never re-sends an unchanged kind (its `er`
+    // latch), so the commanded cursor is re-applied on every tick while the
+    // pointer is inside the shaped region.
+    {
+        let handle = app.clone();
+        // Resync the stylesheet property about once a second; the native cursor
+        // itself is re-applied on every tick.
+        let tick = std::sync::Arc::new(AtomicUsize::new(0));
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+            reassert_main_cursor(&handle);
+            if tick.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
+                resync_stylesheet_cursor(&handle);
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    }
     Ok(())
 }
 
@@ -1304,12 +1567,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn monitor_switch_ignore_is_independent_from_explicit_cursor_ignore() {
+    fn only_the_monitor_latch_ignores_input() {
         let mut hit = HitState::default();
         assert!(!ignores_input(&hit));
 
+        // The frontend's force-ignore marks the fullscreen shell passthrough
+        // but must not drop the XShape: Wayland has no global hook stream to
+        // deliver the next interaction, and dropping the shape would strand a
+        // stationary pointer (no EnterNotify around a restored region).
         hit.force_ignore = true;
-        assert!(ignores_input(&hit));
+        assert!(!ignores_input(&hit));
 
         hit.monitor_ignore = true;
         assert!(ignores_input(&hit));
@@ -1349,6 +1616,21 @@ mod tests {
             ..Insets::default()
         };
         assert_eq!(dock_edge((0, 0, 1920, 32), monitor, &top_reserved), None);
+    }
+
+    #[test]
+    fn login_account_history_is_injected_only_into_the_login_window() {
+        let login = login_history_script("login");
+        assert!(login.contains("wuwatappo-login-accounts"));
+        assert!(login.contains("wuwatappo-login-phones"));
+        // The enhancement is its own script, never part of the shared
+        // initialization string: a failure there must not disable cookies or
+        // the WebSocket bridge for every window.
+        let shared = initialize("login").expect("login initialization");
+        assert!(!shared.contains("wuwatappo-login-accounts"));
+        assert!(!shared.contains("wuwatappo-login-phones"));
+        assert_eq!(login_history_script("main"), "");
+        assert_eq!(login_history_script("panel"), "");
     }
 
     #[test]
