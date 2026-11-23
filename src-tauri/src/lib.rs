@@ -71,6 +71,8 @@ fn handle(invoke: Invoke) -> bool {
         storage::save_key_press_count,
         storage::load_cumulative_click_count,
         storage::save_cumulative_click_count,
+        storage::load_reset_click_archive,
+        system::run_network_diagnostics,
         shortcuts::get_app_shortcuts,
         shortcuts::set_app_shortcuts,
         shortcuts::set_shortcut_capture,
