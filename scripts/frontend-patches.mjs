@@ -49,16 +49,16 @@ export function patchCookieStorage(source) {
 // sends an out-of-region position, so the panes hide again just like on
 // Windows.
 export function patchChestTimers(source) {
-  const timer = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;';
-  const visibility = 'function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}';
-  const panes = 'const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
+  const timer = 'function oo(){if(!A.isLoggedIn){Yt.value=0,Kt.value=0,Xo.value=0,zo.value=0;return}if(!St.value)return;';
+  const visibility = 'function ai(e){return qa.value?e||Tr.value?!0:bt.value:!1}';
+  const panes = 'const si=pe(()=>ii.value==="right"?!1:ii.value==="left"?ai(!0):ai(ro.value)),li=pe(()=>ii.value==="left"?!1:(ii.value==="right",ai(io.value)));';
   if (source.split(timer).length !== 2 || source.split(visibility).length !== 2 || source.split(panes).length !== 2) {
     throw new Error('Chest timer or visibility code changed; reconcile the frontend before building.');
   }
   return source
-    .replace(timer, 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}eo.value=!0;')
-    .replace(visibility, 'function Qr(e){return !!((A.isLoggedIn&&Cr.value)||La.value&&(e||P.value))}')
-    .replace(panes, 'const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>A.isLoggedIn&&Cr.value?!0:Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));');
+    .replace(timer, 'function oo(){if(!A.isLoggedIn){Yt.value=0,Kt.value=0,Xo.value=0,zo.value=0;return}St.value=!0;')
+    .replace(visibility, 'function ai(e){return !!((A.isLoggedIn&&Tr.value)||qa.value&&(e||bt.value))}')
+    .replace(panes, 'const si=pe(()=>A.isLoggedIn&&Tr.value?!0:ii.value==="right"?!1:ii.value==="left"?ai(!0):ai(ro.value)),li=pe(()=>A.isLoggedIn&&Tr.value?!0:ii.value==="left"?!1:(ii.value==="right",ai(io.value)));');
 }
 
 export function patchLoginReady(source) {
@@ -82,7 +82,7 @@ export function patchRelaunch(source) {
   return source.replace(RELAUNCH_SOURCE, 'async function relaunch(){await invoke("restart_app")}');
 }
 
-export const SESSION_RESTORE_SOURCE = 'function an(e={}){return Z(),le("infoToken")?I||(I=(async()=>{try{return await pe(),e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success")),!0}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),a("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:w(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
+export const SESSION_RESTORE_SOURCE = 'function sn(e={}){return X(),ce("infoToken")?I||(I=(async()=>{try{return await ve(),e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success")),!0}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),l("auth:session_restore_failed"),o("AUTH","operation_failed",{stage:"session_restore",reason_code:S(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
 
 // A cold start can race the network coming up. The official code treats every
 // `user/me` failure as "no saved login", so a transient DNS/connect error hides
@@ -92,7 +92,7 @@ export function patchSessionRestore(source) {
   if (source.split(SESSION_RESTORE_SOURCE).length !== 2) {
     throw new Error('Original session restore flow changed; reconcile auth retry before building.');
   }
-  const replacement = 'function an(e={}){return Z(),le("infoToken")?I||(I=(async()=>{try{for(let t=0;t<3;t+=1){try{await pe();e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success"));return!0}catch(n){const s=w(n);if(t<2&&(s==="network_error"||s==="timeout")){await new Promise(o=>setTimeout(o,1e3*(t+1)));continue}throw n}}return!1}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),a("auth:session_restore_failed"),l("AUTH","operation_failed",{stage:"session_restore",reason_code:w(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
+  const replacement = 'function sn(e={}){return X(),ce("infoToken")?I||(I=(async()=>{try{for(let t=0;t<3;t+=1){try{await ve();e.emitLoginSuccess!==!1&&window.dispatchEvent(new CustomEvent("cat-auth-login-success"));return!0}catch(n){const s=S(n);if(t<2&&(s==="network_error"||s==="timeout")){await new Promise(o=>setTimeout(o,1e3*(t+1)));continue}throw n}}return!1}catch(n){return console.error("根据 infoToken 恢复登录态失败:",n),l("auth:session_restore_failed"),o("AUTH","operation_failed",{stage:"session_restore",reason_code:S(n)},"warn"),!1}finally{I=null}})(),I):Promise.resolve(!1)}';
   return source.replace(SESSION_RESTORE_SOURCE, replacement);
 }
 

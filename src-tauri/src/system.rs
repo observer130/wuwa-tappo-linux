@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::{
+    collections::VecDeque,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -13,9 +14,14 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
+use url::Url;
 
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 32 * 1024;
+const OFFICIAL_API_HOST: &str = "api-mc-wuwatappo.kurogames-global.com";
+const OFFICIAL_ASSET_HOST_SUFFIX: &str = ".kurogames-global.com";
+const DIAGNOSTIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+const DIAGNOSTIC_RUN_HISTORY: usize = 8;
 static LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn os_release() -> (String, String) {
@@ -225,6 +231,112 @@ fn boot_diagnostics(app: &AppHandle) -> Value {
     })
 }
 
+fn recent_diagnostic_runs() -> &'static Mutex<VecDeque<String>> {
+    static RUNS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+    RUNS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn validate_diagnostic_url(raw: &str, api: bool) -> Result<String, String> {
+    let url =
+        Url::parse(raw.trim()).map_err(|_| "network diagnostic url is invalid".to_string())?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return Err("network diagnostic url must be an https origin".into());
+    }
+    let host = url.host_str().ok_or("network diagnostic url has no host")?;
+    if api {
+        if host != OFFICIAL_API_HOST {
+            return Err("network diagnostic api host is not the official endpoint".into());
+        }
+    } else if host != OFFICIAL_API_HOST && !host.ends_with(OFFICIAL_ASSET_HOST_SUFFIX) {
+        return Err("network diagnostic assets host is not an official endpoint".into());
+    }
+    Ok(host.to_owned())
+}
+
+async fn probe_diagnostic_host(host: &str) -> &'static str {
+    match tokio::time::timeout(
+        DIAGNOSTIC_CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((host, 443u16)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => {
+            drop(stream);
+            "complete"
+        }
+        Ok(Err(_)) => "network_error",
+        Err(_) => "timeout",
+    }
+}
+
+/// Probe the official API and asset hosts for the settings diagnostics panel.
+/// The frontend retries the same run id, so results are memoized per run id to
+/// avoid repeating probes and to report `already_collected` on the retry.
+#[tauri::command]
+pub async fn run_network_diagnostics(
+    app: AppHandle,
+    region: String,
+    api_base: String,
+    assets_host: Option<String>,
+    pre_release: bool,
+    run_id: String,
+) -> Result<Value, String> {
+    let api_host = validate_diagnostic_url(&api_base, true)?;
+    let assets_host = match assets_host.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => Some(validate_diagnostic_url(raw, false)?),
+        _ => None,
+    };
+    let region = region.trim().to_owned();
+    if region.is_empty() {
+        return Err("network diagnostic region is required".into());
+    }
+    let run_id = run_id.trim().to_owned();
+    if run_id.is_empty() || run_id.len() > 128 {
+        return Err("network diagnostic run id is invalid".into());
+    }
+    {
+        let runs = recent_diagnostic_runs()
+            .lock()
+            .map_err(|_| "network diagnostic state poisoned")?;
+        if runs.iter().any(|seen| seen == &run_id) {
+            return Ok(json!({ "status": "already_collected" }));
+        }
+    }
+    let api_status = probe_diagnostic_host(&api_host).await;
+    let assets_status = match assets_host.as_deref() {
+        Some(host) => Some(probe_diagnostic_host(host).await),
+        None => None,
+    };
+    let status = if api_status != "complete" {
+        api_status
+    } else {
+        assets_status.unwrap_or("complete")
+    };
+    let _ = write_message(
+        &app,
+        "info",
+        &format!(
+            "[NETWORK] diagnostics run={run_id} region={region} pre_release={pre_release} \
+             api={api_host}:{api_status} assets={assets_status:?}"
+        ),
+    );
+    let mut result = json!({ "status": status });
+    if status == "complete" {
+        if let Some(host) = assets_host {
+            result["resource_url"] =
+                json!(format!("https://{host}/app/json-host/latest_host.json"));
+            result["resource_source"] = json!("native_assets_probe");
+        }
+    }
+    if let Ok(mut runs) = recent_diagnostic_runs().lock() {
+        runs.push_back(run_id);
+        while runs.len() > DIAGNOSTIC_RUN_HISTORY {
+            runs.pop_front();
+        }
+    }
+    Ok(result)
+}
+
 pub struct SystemMonitor {
     stop: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -362,5 +474,25 @@ mod tests {
     #[test]
     fn redaction_escapes_line_breaks() {
         assert_eq!(redact("a\nb"), "a\\nb");
+    }
+
+    #[test]
+    fn diagnostics_accept_only_official_https_hosts() {
+        assert_eq!(
+            validate_diagnostic_url("https://api-mc-wuwatappo.kurogames-global.com", true).unwrap(),
+            "api-mc-wuwatappo.kurogames-global.com"
+        );
+        assert_eq!(
+            validate_diagnostic_url("https://mc-wuwatappo.kurogames-global.com", false).unwrap(),
+            "mc-wuwatappo.kurogames-global.com"
+        );
+        assert!(
+            validate_diagnostic_url("http://api-mc-wuwatappo.kurogames-global.com", true).is_err()
+        );
+        assert!(validate_diagnostic_url("https://example.com", true).is_err());
+        assert!(validate_diagnostic_url("https://example.com", false).is_err());
+        assert!(
+            validate_diagnostic_url("https://api-mc-wuwatappo.kurogames-global.com", false).is_ok()
+        );
     }
 }

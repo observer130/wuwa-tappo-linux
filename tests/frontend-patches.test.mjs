@@ -61,94 +61,94 @@ test('login tokens survive when WebKitGTK rejects tauri:// cookies', () => {
   assert.throws(() => patchCookieStorage('getCookie=e=>{}'), /cookie helpers changed/);
 });
 
-const CHEST_SOURCE = 'function Un(){if(!A.isLoggedIn){Bt.value=0,Nt.value=0,Do.value=0,Lo.value=0;return}if(!eo.value)return;const e=fs(),t=performance.now();Bt.value=Ir===null?ho(A.userInfo?.left_treasure_chest,e):Math.max(0,Ir-t),Nt.value=Mr===null?ho(A.userInfo?.right_treasure_chest,e):Math.max(0,Mr-t),$r("left",Bt.value),$r("right",Nt.value)}function Qr(e){return La.value?e||Cr.value?!0:P.value:!1}const Zr=pe(()=>Jr.value==="right"?!1:Jr.value==="left"?Qr(!0):Qr(Vn.value)),ei=pe(()=>Jr.value==="left"?!1:(Jr.value==="right",Qr(Wn.value)));';
+const CHEST_SOURCE = 'function oo(){if(!A.isLoggedIn){Yt.value=0,Kt.value=0,Xo.value=0,zo.value=0;return}if(!St.value)return;const e=ys(),t=performance.now();Yt.value=xr===null?Co(A.userInfo?.left_treasure_chest,e):Math.max(0,xr-t),Kt.value=Or===null?Co(A.userInfo?.right_treasure_chest,e):Math.max(0,Or-t),ri("left",Yt.value),ri("right",Kt.value)}function ai(e){return qa.value?e||Tr.value?!0:bt.value:!1}const si=pe(()=>ii.value==="right"?!1:ii.value==="left"?ai(!0):ai(ro.value)),li=pe(()=>ii.value==="left"?!1:(ii.value==="right",ai(io.value)));';
 
 test('chest timers are not blocked by activity config readiness', () => {
   const patched = patchChestTimers(CHEST_SOURCE);
-  assert.ok(patched.includes('eo.value=!0;'));
-  assert.ok(!patched.includes('if(!eo.value)return;'));
-  assert.ok(patched.includes('!!((A.isLoggedIn&&Cr.value)||La.value&&(e||P.value))'));
-  assert.ok(patched.includes('const Zr=pe(()=>A.isLoggedIn&&Cr.value?!0:'));
-  assert.throws(() => patchChestTimers('function Un(){if(!eo.value)return;}'), /Chest timer or visibility/);
+  assert.ok(patched.includes('St.value=!0;'));
+  assert.ok(!patched.includes('if(!St.value)return;'));
+  assert.ok(patched.includes('!!((A.isLoggedIn&&Tr.value)||qa.value&&(e||bt.value))'));
+  assert.ok(patched.includes('const si=pe(()=>A.isLoggedIn&&Tr.value?!0:'));
+  assert.throws(() => patchChestTimers('function oo(){if(!St.value)return;}'), /Chest timer or visibility/);
 
   const ref = value => ({ value });
   const timerState = {
     A: { isLoggedIn: true, userInfo: { left_treasure_chest: 111, right_treasure_chest: 222 } },
-    eo: ref(false),
-    Bt: ref(0),
-    Nt: ref(0),
-    Do: ref(0),
-    Lo: ref(0),
-    Ir: null,
-    Mr: null,
-    fs: () => 1000,
+    St: ref(false),
+    Yt: ref(0),
+    Kt: ref(0),
+    Xo: ref(0),
+    zo: ref(0),
+    xr: null,
+    Or: null,
+    ys: () => 1000,
     performance: { now: () => 500 },
-    ho: value => value,
-    $r: () => {},
+    Co: value => value,
+    ri: () => {},
   };
-  const timerSnippet = patched.slice(patched.indexOf('function Un('), patched.indexOf('function Qr('));
-  vm.runInNewContext(`${timerSnippet};globalThis.runTimer=Un;`, timerState);
+  const timerSnippet = patched.slice(patched.indexOf('function oo('), patched.indexOf('function ai('));
+  vm.runInNewContext(`${timerSnippet};globalThis.runTimer=oo;`, timerState);
   timerState.runTimer();
-  assert.equal(timerState.eo.value, true, 'readiness is marked on first computation');
-  assert.equal(timerState.Bt.value, 111, 'left timer falls back to local computation');
-  assert.equal(timerState.Nt.value, 222, 'right timer falls back to local computation');
+  assert.equal(timerState.St.value, true, 'readiness is marked on first computation');
+  assert.equal(timerState.Yt.value, 111, 'left timer falls back to local computation');
+  assert.equal(timerState.Kt.value, 222, 'right timer falls back to local computation');
 
   timerState.A.isLoggedIn = false;
-  timerState.Bt.value = 9;
-  timerState.Nt.value = 9;
+  timerState.Yt.value = 9;
+  timerState.Kt.value = 9;
   timerState.runTimer();
-  assert.equal(timerState.Bt.value, 0);
-  assert.equal(timerState.Nt.value, 0);
+  assert.equal(timerState.Yt.value, 0);
+  assert.equal(timerState.Kt.value, 0);
 });
 
 test('chest panes follow official visibility rules with port always-show', () => {
   const patched = patchChestTimers(CHEST_SOURCE);
-  const snippet = patched.slice(patched.indexOf('function Qr(e)'));
+  const snippet = patched.slice(patched.indexOf('function ai(e)'));
   const ref = value => ({ value });
   const state = {
     A: { isLoggedIn: true },
-    La: ref(true),
-    Cr: ref(false),
-    P: ref(false),
-    Vn: ref(false),
-    Wn: ref(false),
-    Jr: ref(null),
+    qa: ref(true),
+    Tr: ref(false),
+    bt: ref(false),
+    ro: ref(false),
+    io: ref(false),
+    ii: ref(null),
     pe: compute => ({ get value() { return compute(); } }),
   };
-  vm.runInNewContext(`${snippet};globalThis.panes=()=>[Zr.value,ei.value];`, state);
+  vm.runInNewContext(`${snippet};globalThis.panes=()=>[si.value,li.value];`, state);
   const panesWith = overrides => {
     const values = {
-      isLoggedIn: true, La: true, Cr: false, P: false, Vn: false, Wn: false, Jr: null,
+      isLoggedIn: true, qa: true, Tr: false, bt: false, ro: false, io: false, ii: null,
       ...overrides,
     };
     state.A.isLoggedIn = values.isLoggedIn;
-    state.La.value = values.La;
-    state.Cr.value = values.Cr;
-    state.P.value = values.P;
-    state.Vn.value = values.Vn;
-    state.Wn.value = values.Wn;
-    state.Jr.value = values.Jr;
+    state.qa.value = values.qa;
+    state.Tr.value = values.Tr;
+    state.bt.value = values.bt;
+    state.ro.value = values.ro;
+    state.io.value = values.io;
+    state.ii.value = values.ii;
     return [...state.panes()];
   };
 
   // Official: hovering the pet reveals the countdown panes.
-  assert.deepEqual(panesWith({ P: true }), [true, true]);
+  assert.deepEqual(panesWith({ bt: true }), [true, true]);
   assert.deepEqual(panesWith({}), [false, false]);
   // A ready chest stays visible without hover, on either side.
-  assert.deepEqual(panesWith({ Vn: true }), [true, false]);
-  assert.deepEqual(panesWith({ Wn: true }), [false, true]);
-  assert.deepEqual(panesWith({ Vn: true, Wn: true }), [true, true]);
+  assert.deepEqual(panesWith({ ro: true }), [true, false]);
+  assert.deepEqual(panesWith({ io: true }), [false, true]);
+  assert.deepEqual(panesWith({ ro: true, io: true }), [true, true]);
   // The balance gate hides panes even when hovering or a chest is ready.
-  assert.deepEqual(panesWith({ La: false, P: true }), [false, false]);
-  assert.deepEqual(panesWith({ La: false, Vn: true, Wn: true }), [false, false]);
+  assert.deepEqual(panesWith({ qa: false, bt: true }), [false, false]);
+  assert.deepEqual(panesWith({ qa: false, ro: true, io: true }), [false, false]);
   // "Always show chest" bypasses the balance gate when logged in.
-  assert.deepEqual(panesWith({ Cr: true, La: false }), [true, true]);
+  assert.deepEqual(panesWith({ Tr: true, qa: false }), [true, true]);
   // Below 2000 clicks the official view shows only the affordable side.
-  assert.deepEqual(panesWith({ Jr: 'right', Vn: false, Wn: true }), [false, true]);
-  assert.deepEqual(panesWith({ Jr: 'left', Vn: true, Wn: false }), [true, false]);
+  assert.deepEqual(panesWith({ ii: 'right', ro: false, io: true }), [false, true]);
+  assert.deepEqual(panesWith({ ii: 'left', ro: true, io: false }), [true, false]);
   // Logged-out sessions keep the official two-button login prompt.
-  assert.deepEqual(panesWith({ isLoggedIn: false, Vn: true, Wn: true }), [true, true]);
-  assert.deepEqual(panesWith({ isLoggedIn: false, Cr: true, Vn: true, Wn: true }), [true, true]);
+  assert.deepEqual(panesWith({ isLoggedIn: false, ro: true, io: true }), [true, true]);
+  assert.deepEqual(panesWith({ isLoggedIn: false, Tr: true, ro: true, io: true }), [true, true]);
 });
 
 test('relaunch goes through the native restart command', () => {
@@ -175,9 +175,9 @@ test('session restore retries transport failures but not auth rejections', async
     const attempts = [];
     const context = {
       I: null,
-      Z: () => {},
-      le: () => 'token',
-      pe: async () => {
+      X: () => {},
+      ce: () => 'token',
+      ve: async () => {
         attempts.push(1);
         const failure = failures[attempts.length - 1];
         if (failure) throw { reason: failure };
@@ -185,14 +185,14 @@ test('session restore retries transport failures but not auth rejections', async
       window: { dispatchEvent: () => {} },
       CustomEvent: class {},
       console: { error: () => {} },
-      a: () => {},
       l: () => {},
-      w: error => error.reason,
+      o: () => {},
+      S: error => error.reason,
       setTimeout: callback => callback(),
       Promise,
       Error,
     };
-    vm.runInNewContext(`${patched};globalThis.bootstrap=an;`, context);
+    vm.runInNewContext(`${patched};globalThis.bootstrap=sn;`, context);
     const restored = await context.bootstrap({ emitLoginSuccess: false });
     return { restored, attempts: attempts.length };
   }
