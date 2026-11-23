@@ -9,12 +9,12 @@ const contract = JSON.parse(fs.readFileSync(new URL('./contracts.json', import.m
 const runtimeCommands = contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('application-runtime'));
 
 test('CN runtime and Windows installer have separate exhaustive inventories', () => {
-  assert.equal(runtimeCommands.length, 53);
+  assert.equal(runtimeCommands.length, 57);
   assert.equal(contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('windows-installer')).length, 9);
   assert.equal(contract.commands.filter(item => item.kind === 'plugin').length, 116);
-  assert.equal(contract.events.length, 63);
+  assert.equal(contract.events.length, 68);
   assert.equal(contract.sourceApplication.region, 'CN');
-  assert.equal(contract.sourceApplication.entryModule, 'index-CM6qA69G.js');
+  assert.equal(contract.sourceApplication.entryModule, 'index-BelNnexT.js');
   const lock = JSON.parse(fs.readFileSync(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
   assert.equal(contract.sourceApplication.version, lock.version);
   assert.ok(!Object.hasOwn(contract.runtimeConstants, 'authCallbackScheme'));

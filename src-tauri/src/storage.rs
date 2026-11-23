@@ -31,6 +31,11 @@ struct EnvironmentCounters {
 struct CounterData {
     version: u32,
     environments: BTreeMap<String, EnvironmentCounters>,
+    /// Cumulative totals captured right before a local reset, so a later login
+    /// can restore the gross click count the user already accumulated. Keyed
+    /// by environment and then by account cuid.
+    #[serde(default)]
+    reset_archive: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
 impl Default for CounterData {
@@ -38,6 +43,7 @@ impl Default for CounterData {
         Self {
             version: 1,
             environments: BTreeMap::new(),
+            reset_archive: BTreeMap::new(),
         }
     }
 }
@@ -122,6 +128,61 @@ impl CounterStore {
         self.write(&data)
     }
 
+    /// Cumulative total archived for `cuid` right before the local data was
+    /// reset, or 0 when the account has never reset on this machine.
+    pub fn load_reset_archive(&self, environment: &str, cuid: &str) -> Result<u64, String> {
+        validate_environment(environment)?;
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| "counter_store_lock_poisoned")?;
+        Ok(self
+            .read()?
+            .reset_archive
+            .get(environment)
+            .and_then(|archive| archive.get(cuid))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    /// Record the cumulative total before a reset. An empty cuid (the user is
+    /// logged out) is skipped: there is no account the total can be restored
+    /// to after the reset.
+    pub fn save_reset_archive(
+        &self,
+        environment: &str,
+        cuid: &str,
+        count: u64,
+    ) -> Result<(), String> {
+        validate_environment(environment)?;
+        validate_count(count)?;
+        if cuid.trim().is_empty() {
+            return Ok(());
+        }
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| "counter_store_lock_poisoned")?;
+        let mut data = self.read()?;
+        data.reset_archive
+            .entry(environment.to_owned())
+            .or_default()
+            .insert(cuid.to_owned(), count);
+        self.write(&data)
+    }
+
+    /// Drop all counters of one environment while keeping the reset archive.
+    pub fn reset_environment(&self, environment: &str) -> Result<(), String> {
+        validate_environment(environment)?;
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| "counter_store_lock_poisoned")?;
+        let mut data = self.read()?;
+        data.environments.remove(environment);
+        self.write(&data)
+    }
+
     fn read(&self) -> Result<CounterData, String> {
         let file = match File::open(&self.path) {
             Ok(file) => file,
@@ -151,6 +212,12 @@ impl CounterStore {
                 if !entry.cumulative.contains_key(cuid) {
                     return Err("counter_store_active_account_missing".into());
                 }
+            }
+        }
+        for (environment, archive) in &data.reset_archive {
+            validate_environment(environment)?;
+            for count in archive.values() {
+                validate_count(*count)?;
             }
         }
         Ok(data)
@@ -274,6 +341,15 @@ pub fn save_cumulative_click_count(
     environment: String,
 ) -> Result<(), String> {
     store.save_cumulative(&environment, &cuid, count)
+}
+
+#[tauri::command]
+pub fn load_reset_click_archive(
+    store: tauri::State<'_, CounterStore>,
+    environment: String,
+    cuid: String,
+) -> Result<u64, String> {
+    store.load_reset_archive(&environment, &cuid)
 }
 
 #[cfg(test)]
@@ -452,5 +528,55 @@ mod tests {
                 0o700
             );
         }
+    }
+
+    #[test]
+    fn reset_archive_survives_environment_reset() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        store.save_key_press("cn-cn-prod", 42).unwrap();
+        store
+            .save_cumulative("cn-cn-prod", "account-a", 1200)
+            .unwrap();
+        store
+            .save_reset_archive("cn-cn-prod", "account-a", 1300)
+            .unwrap();
+        store.reset_environment("cn-cn-prod").unwrap();
+        assert_eq!(store.load_key_press("cn-cn-prod").unwrap(), 0);
+        assert_eq!(store.load_cumulative("cn-cn-prod").unwrap().count, 0);
+        assert_eq!(
+            store.load_reset_archive("cn-cn-prod", "account-a").unwrap(),
+            1300
+        );
+        assert_eq!(
+            store.load_reset_archive("cn-cn-prod", "account-b").unwrap(),
+            0
+        );
+        assert_eq!(store.load_reset_archive("cn-prod", "account-a").unwrap(), 0);
+    }
+
+    #[test]
+    fn reset_archive_skips_anonymous_accounts_and_rejects_bad_counts() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        store.save_reset_archive("cn-cn-prod", "  ", 10).unwrap();
+        assert_eq!(store.load_reset_archive("cn-cn-prod", "  ").unwrap(), 0);
+        assert!(store
+            .save_reset_archive("cn-cn-prod", "account-a", MAX_SAFE_COUNT + 1)
+            .is_err());
+        assert!(store.save_reset_archive("", "account-a", 10).is_err());
+    }
+
+    #[test]
+    fn legacy_store_without_reset_archive_still_loads() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        fs::write(
+            &store.path,
+            r#"{"version":1,"environments":{"env":{"key_press":7,"active_cuid":null,"cumulative":{}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(store.load_key_press("env").unwrap(), 7);
+        assert_eq!(store.load_reset_archive("env", "account-a").unwrap(), 0);
     }
 }

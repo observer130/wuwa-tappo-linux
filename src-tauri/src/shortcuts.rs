@@ -147,6 +147,13 @@ impl Shortcuts {
         self.0.capture.store(active, Ordering::Release);
     }
 
+    /// Restore the default table and persist it. Used when the user clears all
+    /// local data from the settings panel.
+    pub fn reset(&self) -> Result<Value, String> {
+        let defaults = serde_json::to_value(defaults()).map_err(|error| error.to_string())?;
+        self.apply(&defaults)
+    }
+
     pub fn apply(&self, config: &Value) -> Result<Value, String> {
         let parsed = parse_config(config)?;
         let serialized = serde_json::to_value(&parsed).map_err(|error| error.to_string())?;
@@ -332,6 +339,11 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         .join("shortcuts.json");
     app.manage(Shortcuts::load(path));
     Ok(())
+}
+
+/// Restores the shared table to its defaults.
+pub fn reset(app: &AppHandle) -> Result<(), String> {
+    shared(app).reset().map(|_| ())
 }
 
 /// Resolves the shared table the input monitor uses for matching.

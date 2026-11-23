@@ -34,6 +34,7 @@ pub const COMMANDS: &[&str] = &[
     "get_maintenance_notice_payload",
     "has_maintenance_notice",
     "hide_main_after_maintenance_notice_ready",
+    "hide_toast_overlay",
     "is_force_update_locked",
     "open_about_window",
     "open_login_window",
@@ -41,6 +42,7 @@ pub const COMMANDS: &[&str] = &[
     "open_oss_notice_window",
     "open_panel_window",
     "open_update_window",
+    "reset_local_data",
     "restart_app",
     "popup_main_dock_context_menu",
     "report_webview_metrics",
@@ -339,6 +341,9 @@ fn apply_main_input_shape(app: &AppHandle) -> Result<(), String> {
         Err(error) => {
             let message = format!("[SHAPE] apply failed: {error}");
             let _ = crate::system::write_message(app, "warn", &message);
+            // The frontend retries native input synchronization when its shape
+            // and pointer witness drift apart.
+            let _ = app.emit("native-input-sync-failed", ());
         }
     }
     result
@@ -592,11 +597,10 @@ fn emit_pointer_leave(app: &AppHandle) {
     {
         return;
     }
-    let payload = crate::input::pointer_leave_payload(app);
     match app.try_state::<crate::input::InputMonitor>() {
-        Some(monitor) => monitor.emit_pointer_move(app, payload),
+        Some(monitor) => monitor.emit_pointer_leave(app),
         None => {
-            let _ = app.emit("mouse-move", payload);
+            let _ = app.emit("mouse-leave", ());
         }
     }
 }
@@ -1426,6 +1430,11 @@ pub fn dispatch(
             w.set_ignore_cursor_events(true).map_err(err)?;
             center_on_main(app, &w, Some((620., 160.)))?;
         }
+        "hide_toast_overlay" => {
+            if let Some(w) = app.get_webview_window("toast") {
+                w.hide().map_err(err)?;
+            }
+        }
         "sync_native_menu" => return crate::menu::sync(app, args),
         "popup_main_dock_context_menu" => {
             return crate::menu::popup(
@@ -1439,6 +1448,7 @@ pub fn dispatch(
         // The maintenance notice covers the whole app. Its exit button has no
         // in-app destination, so it closes the process like the original client.
         "exit_maintenance_app" => terminate_process(app),
+        "reset_local_data" => return reset_local_data(app, args),
         // The patched relaunch() calls this instead of the process plugin,
         // whose main-thread restart tears down WebKitGTK before the next
         // process can start.
@@ -1499,6 +1509,67 @@ fn restart_process(app: &AppHandle) {
         }
         std::process::exit(0);
     });
+}
+
+/// Clear the local counters, shortcuts and WebView storage, then restart.
+///
+/// The official settings action calls this after it disposed its listeners and
+/// persisted the pending click counters. The archived cumulative total is the
+/// larger of the displayed and cumulative counts so a later login can restore
+/// the gross count the user had before the reset.
+fn reset_local_data(app: &AppHandle, args: &Value) -> Result<Value, String> {
+    let environment = args
+        .get("environment")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Invalid environment")?;
+    let local_count = count(args, "localCount")?;
+    let cumulative_count = match args.get("cumulativeCount") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(count(args, "cumulativeCount")?),
+    };
+    let cuid = args
+        .get("cuid")
+        .and_then(Value::as_str)
+        .ok_or("Invalid cuid")?;
+    // failureMessage is the settings row's localized error text; it is only
+    // echoed back by the frontend, so validating its presence is enough.
+    args.get("failureMessage")
+        .and_then(Value::as_str)
+        .ok_or("Invalid failureMessage")?;
+
+    let store = app.state::<crate::storage::CounterStore>();
+    store.save_reset_archive(
+        environment,
+        cuid,
+        local_count.max(cumulative_count.unwrap_or(0)),
+    )?;
+    store.reset_environment(environment)?;
+    crate::shortcuts::reset(app)?;
+
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        // Let the invoke resolver deliver its response before the webview is
+        // torn down. `clear_all_browsing_data` schedules work on the WebView
+        // dispatcher, so it must not run on the GTK thread.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Some(window) = handle.get_webview_window("main") {
+            if let Err(error) = window.clear_all_browsing_data() {
+                eprintln!("Could not clear the WebView browsing data: {error}");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        restart_process(&handle);
+    });
+    Ok(Value::Null)
+}
+
+fn count(args: &Value, name: &str) -> Result<u64, String> {
+    args.get(name)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value.trunc() as u64)
+        .ok_or_else(|| format!("Invalid {name}"))
 }
 
 pub fn setup(app: &AppHandle) -> Result<(), String> {
