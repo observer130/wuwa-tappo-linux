@@ -33,7 +33,7 @@ Wuwa Tappo Linux 由两半组成：**官方静态前端**和**重建的 Linux �
 3. `setup` 创建 `CounterStore`，初始化系统托盘/Dock 菜单与网络监视器。托盘不可用时菜单功能降级，关闭主窗口会直接退出。
 4. `windows::setup` 创建 `main` 窗口（900×650 初始尺寸），随后按当前显示器铺满，显示并默认开启鼠标穿透。
 5. 启动输入监听线程；若当前用户不在 `input` 组，`get_input_status` 会返回失败，前端显示提示。
-6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外的点击由 XWayland/KWin 直接穿透；输入线程只在指针可证实位于区域内、或坐标可证实为实时时上报 `mouse-move`，避免 Wayland 下 X11 指针坐标冻结驱动悬停（见「指针穿透与悬停」）。
+6. 前端上报命中区域后，后端把它们换算为物理像素并写成主窗口的 **XShape input region**。区域外的点击由 XWayland/KWin 直接穿透；输入线程只在指针位于区域内（或 swallow 期间）上报 `mouse-move`，避免 Wayland 下 X11 指针坐标冻结驱动悬停；区域外按键另发一次窗外哨兵移动，防止官方前端用缓存坐标命中桌宠（见「指针穿透与悬停」）。
 7. `get_main_desktop_safe_area` 通过 EWMH (`_NET_ACTIVE_WINDOW`、`_NET_WM_STATE_FULLSCREEN`、dock 窗口) 返回前台全屏状态、`foregroundApplicationFullscreen` 和 `autoHideEdge`，与官方用于自动游戏模式/任务栏避让的字段保持一致。
 
 `main` 之外的所有窗口都是按需创建、关闭时仅 `hide`，再次打开复用实例。主窗口关闭时，如果托盘创建成功则隐藏到托盘；托盘菜单的“退出”会走前端 `quitApp` 的保存计数/断开 Socket 流程。托盘不可用或创建失败时关闭主窗口直接退出，避免留下无法唤出的后台进程和单实例锁。`F9` 在窗口隐藏到托盘时也会恢复窗口。登录窗口通过 `login_window_ready` + `login-modal-open` 事件避免首帧竞态。
@@ -86,7 +86,7 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
   - `EV_KEY value=2` 是自动重复，不产生 `key-release`；只有真实松手才结束按键。
   - 模拟扳机（`ABS_Z`/`ABS_RZ`，兼容 `ABS_GAS`/`ABS_BRAKE`）超过轴范围中点时发一次 `gamepad-button-press`，松手不发 release。
 - 指针位置通过独立的 XCB 连接查询 X11 根窗口，避免 Tao/GDK 在后台线程返回启动时的缓存坐标。输入区域生效后，指针位于桌宠上时 XWayland 会持续更新该坐标。
-- 鼠标移动以 33 ms 节流轮询：`pointer_inside`（指针位于主窗口输入区域，由 GDK enter/leave 通知维护）为真时上报实时采样；区域外不再发送心跳，只有采样与上一次不同（可证实指针在其他 X 窗口上、坐标为实时）时才按真坐标上报，首个区域外采样只记录不发送。自最近一次 leave 起没有指针运动、且采样落回当前生效命中区域内时，自动恢复 `pointer_inside`（KWin 在区域重新盖住静止指针时不会重发 enter）。swallow（拖动/点击转发）期间即使指针离开普通命中区域也使用实时坐标。
+- 鼠标移动以 33 ms 节流轮询：`pointer_inside`（指针位于主窗口输入区域，由 GDK enter/leave 通知维护）为真时上报实时采样；区域外一律不转发移动（冻结采样不是真值，其他 X 窗口上的实时采样按本窗口 CSS 空间命中测试会点亮幻影悬停），只做辅助窗口判定与自动恢复检测，区域外按键的伴随移动改用窗外哨兵坐标。自最近一次 leave 起没有指针运动、且采样落回当前生效命中区域内时，自动恢复 `pointer_inside`（KWin 在区域重新盖住静止指针时不会重发 enter）。swallow（拖动/点击转发）期间即使指针离开普通命中区域也使用实时坐标。
 - 按键去重、鼠标按下状态与手柄按住状态由后端维护，避免重复计数。
 - 需要 `input` 组读权限；失败时前端显示可恢复提示，并提供 `resume_input_monitor`。
 
@@ -140,8 +140,8 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 
 XWayland/Wayland 会话中，指针离开桌宠的 XShape 输入区域后，XWayland 不再提供全局指针坐标：采样冻结在离开时的最后位置。官方 Windows 前端依赖系统级钩子持续获得真坐标，Linux 上没有等价数据源，原生层按下列规则补偿：
 
-- 主窗口控件层级的 `enter-notify-event` / `leave-notify-event` 维护输入线程的 `pointer_inside`。leave 时向官方前端发送一次无 payload 的 `mouse-leave` 事件，官方前端据此清除悬停并让自动隐藏计时下陷；此后冻结采样不再驱动悬停/光标，也不再发送携冻结坐标的合成 `mouse-move`。
-- 区域外的鼠标按键仍上报点击计数，但被 `pointer_inside` 门控拦截，不会命中桌宠、宝箱或触发拖动。区域外的移动采样一律不转发：Wayland 会话下冻结采样不是真值；即使指针正停在其他 XWayland 窗口上、坐标可证实实时，该坐标仍会按本窗口 CSS 空间做命中测试，落在宠物矩形内时会点亮一次「幻影悬停」，指针停手后没有后续事件让它常驻。官方前端的悬停清除与自动隐藏唤醒分别由 `mouse-leave` 事件和按键事件承担，任务栏贴边探测只消费几何签名，不依赖区域外的移动流。
+- 主窗口控件层级的 `enter-notify-event` / `leave-notify-event` 维护输入线程的 `pointer_inside`。leave 时向官方前端发送一次无 payload 的 `mouse-leave` 事件，官方前端据此清除悬停并让自动隐藏计时下陷；此后冻结采样不再驱动悬停/光标，也不再发送携冻结坐标的合成 `mouse-move`。`mouse-leave` 的唯一来源是这里的 crossing 通知（swallow 期间跳过），按键事件不再发送该事件。
+- 区域外的鼠标按键仍上报 `mouse-button` 供官方前端累计点击计数，但不携带实时坐标：伴随的 `mouse-move` 是派生自当前窗口原点与缩放的窗外哨兵坐标（CSS 约 -100000），官方前端用缓存的窗口原点换算后得到负视口坐标，`elementFromPoint` 不会命中桌宠、宝箱或拖动热区；`memberId` 只在 `pointer_inside` 或 swallow 时携带。区域外的移动采样一律不转发：Wayland 会话下冻结采样不是真值；即使指针正停在其他 XWayland 窗口上、坐标可证实实时，该坐标仍会按本窗口 CSS 空间做命中测试，落在宠物矩形内时会点亮一次「幻影悬停」，指针停手后没有后续事件让它常驻。官方前端的悬停清除与自动隐藏唤醒分别由 `mouse-leave` 事件和按键事件承担，任务栏贴边探测只消费几何签名，不依赖区域外的移动流。
 - KWin 的输入区域事件不对称：区域从静止指针下方移除会触发 leave，区域重新盖住静止指针不会触发 enter。输入线程用 evdev 运动计数补偿——自最近一次 leave 起没有指针运动时，冻结采样即真实位置；XQueryPointer 采样若落回当前生效的命中区域内，自动恢复 `pointer_inside` 并重新上报一次位置，指针停在原处也能重新触发悬停。任何真实指针运动都会使该证明失效，直到下一次 leave 重新建立。
 - 运动计数本身分不清「指针停到桌面上」与「区域从指针下方移走」：物理离开时 evdev 先读到离开运动，随后指针停下，纯计数判据会把冻结样本误判为仍在区域内。因此自动恢复还需要「uncovered 见证」——采样至少有一次不被当时的生效命中区域覆盖。区域同步在主线程应用成功后就地判定，33 ms 轮询不会漏掉毫秒级过渡；判定不依赖 `pointer_inside`，因为形状变更产生的 leave 通知要等下一轮主循环才到达 GTK 线程，先于它到达的过渡同样要计入。见证按 evdev 运动纪元打标而不是在下次 leave 时清零，所以「过渡先于 leave 到达」的次序不会丢掉见证，物理移动抬高纪元后旧见证自动失效。该判据的前提是物理离开后命中区域在无运动期间保持不动；若前端恰好在这个窗口内让区域先移开再盖回冻结样本，仍可能误恢复一次——悬停面板重现通常需要指针移动并抬纪元，因此概率很低。真正的区域重建（自动隐藏收起、拖拽后区域同步）经过不覆盖瞬间，照常放行。
 - 桌宠光标：官方前端经 `set_native_input_cursor` / `set_overlay_cursor` 下发 `default/pointer/grab/grabbing`（Windows 全局 SetCursor 语义，宠物本体 CSS 无 cursor 规则）。X11 显示的光标由指针下最深层窗口决定，只设 GTK toplevel 会被 WebKit 子窗口覆盖；原生层把命名光标递归设置到整棵 GDK 窗口树（含 WebKit 子窗口），并按 `default→left_ptr→arrow`、`grab→closed-hand→hand2` 等别名链回退，兼容精简的 Xvfb/旧主题环境。前端只在下发的 kind 变化时发命令（`er` 闩锁），而 WebKitGTK 会在指针移动、悬停 UI 挂载等时机重算 DOM 光标并写回子窗口——两个写入者不同值时，光标会逐帧在手形与箭头间闪烁。因此原生层把命令的 kind 同时镜像进样式表自定义属性 `--wuwa-pet-cursor`，由 `.pet-dock,.pet-dock *{cursor:var(--wuwa-pet-cursor,auto)}` 让 WebKit 的重算结果与命令一致；禁用移动时前端判定为 `default`（箭头）、拖拽启用时为 `grab`（手形）、宝箱按钮上为 `pointer`，均按官方判定跟随，无需原生猜模式。原生层另外在指针处于命中区域内时以 33 ms 节拍重复应用该 kind（GDK 按名字缓存光标对象，重放不会制造新资源），并每秒重写一次样式属性，以便前端重新加载文档后恢复；离开区域后停止维护，桌面光标不受影响。

@@ -30,6 +30,30 @@ pub struct MousePosition {
     pub member_id: Option<u64>,
 }
 
+/// CSS-space offset for the synthetic out-of-region payload. It is deliberately
+/// far from the origin so a stale cached window position (the official frontend
+/// caches `innerPosition`/scale) still maps to a negative viewport coordinate.
+pub const POINTER_LEAVE_CSS_OFFSET: f64 = -100000.0;
+
+/// Sentinel `mouse-move` payload sent as the companion of an out-of-region
+/// button. The frontend converts a `mouse-move` payload back to viewport CSS
+/// coordinates with `(payload - windowOrigin) / tauriScale`, so derive the
+/// payload from the live window origin and scale instead of hardcoding a screen
+/// position: the result stays outside every hit region even when the window
+/// origin is negative (a monitor left of or above the primary one).
+pub fn pointer_leave_position(origin_x: f64, origin_y: f64, tauri_scale: f64) -> MousePosition {
+    let scale = if tauri_scale.is_finite() && tauri_scale > 0.0 {
+        tauri_scale
+    } else {
+        1.0
+    };
+    MousePosition {
+        x: origin_x + POINTER_LEAVE_CSS_OFFSET * scale,
+        y: origin_y + POINTER_LEAVE_CSS_OFFSET * scale,
+        member_id: None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct MouseButton {
     button: &'static str,
@@ -243,18 +267,11 @@ impl InputMonitor {
     fn emit_pointer_button(
         &self,
         app: &AppHandle,
-        move_position: Option<MousePosition>,
+        move_position: MousePosition,
         button: MouseButton,
     ) {
         let _guard = self.state.pointer_emit_lock.lock();
-        match move_position {
-            Some(position) => {
-                let _ = app.emit("mouse-move", position);
-            }
-            None => {
-                let _ = app.emit("mouse-leave", ());
-            }
-        }
+        let _ = app.emit("mouse-move", move_position);
         let _ = app.emit("mouse-button", button);
     }
 
@@ -705,6 +722,27 @@ fn pointer_swallow_active(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// The synthetic out-of-region position used when the pointer is outside the
+/// shaped input region. Derived from the live window origin/scale so it stays
+/// outside every hit region even on monitors with negative coordinates.
+pub(crate) fn pointer_leave_payload(app: &AppHandle) -> MousePosition {
+    let (origin_x, origin_y, scale) = app
+        .get_webview_window("main")
+        .map(|window| {
+            let scale = window
+                .scale_factor()
+                .ok()
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0);
+            match window.inner_position().ok() {
+                Some(position) => (position.x as f64, position.y as f64, scale),
+                None => (0.0, 0.0, scale),
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0));
+    pointer_leave_position(origin_x, origin_y, scale)
+}
+
 /// Button events still drive the global click counter, but a press that lands
 /// outside the shaped input region must not be interpreted as a UI hit. Only
 /// the pointer-inside state (or an active swallow) may receive live coordinates.
@@ -955,10 +993,14 @@ fn run_monitor(
                         }
                         // Outside the shaped input region the sampled position is
                         // XWayland's frozen last-inside coordinate. Keep sending the
-                        // button for the global click counter, but send a leave
-                        // instead of the companion move so the official frontend
-                        // cannot hit-test the pet or reward UI.
-                        let move_position = ui_target.then_some(position);
+                        // button for the global click counter, but replace the
+                        // companion move with an out-of-region sentinel so the
+                        // official frontend cannot hit-test the pet or reward UI.
+                        let move_position = if ui_target {
+                            position
+                        } else {
+                            pointer_leave_payload(&app)
+                        };
                         let payload = MouseButton {
                             button,
                             action,
@@ -1035,11 +1077,11 @@ fn run_monitor(
             // one taken over another window still hit-tests against THIS
             // window's CSS coordinates, so it re-lights the pet hover when
             // that window overlaps the pet rect. The GDK leave already
-            // emitted one out-of-region sentinel that closed the hover, a
-            // press outside re-sends its own sentinel, and the auto-hide
-            // unhide path is likewise driven by the leave sentinel — nothing
-            // else is emitted until a crossing or a rebuilt shape proves a
-            // re-entry.
+            // emitted one `mouse-leave` that closed the hover and a press
+            // outside re-sends its own out-of-region sentinel move, and the
+            // auto-hide unhide path is likewise driven by the leave event —
+            // nothing else is emitted until a crossing or a rebuilt shape
+            // proves a re-entry.
             if last_move_emit.elapsed() >= Duration::from_millis(33) {
                 last_move_emit = Instant::now();
                 if let Some((_position, css_x, css_y)) = mouse_sample(&app, pointer.as_ref()) {
@@ -1088,6 +1130,46 @@ fn run_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_leave_payload_maps_outside_the_viewport() {
+        for (origin_x, origin_y, scale) in
+            [(0.0, 0.0, 1.0), (2560.0, 0.0, 1.5), (-3840.0, -120.0, 1.25)]
+        {
+            let payload = pointer_leave_position(origin_x, origin_y, scale);
+            let css_x = (payload.x - origin_x) / scale;
+            let css_y = (payload.y - origin_y) / scale;
+            assert!(
+                (css_x - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_x}/{scale}"
+            );
+            assert!(
+                (css_y - POINTER_LEAVE_CSS_OFFSET).abs() < 1e-6,
+                "{origin_y}/{scale}"
+            );
+            assert!(css_x < 0.0 && css_y < 0.0);
+            assert!(payload.member_id.is_none());
+        }
+        let serialized =
+            serde_json::to_value(pointer_leave_position(0.0, 0.0, 1.0)).expect("serialize leave");
+        assert!(serialized.get("memberId").is_none());
+    }
+
+    #[test]
+    fn pointer_leave_payload_survives_a_stale_window_origin() {
+        // The official frontend caches innerPosition/scale; a sentinel written
+        // right after a monitor switch may still be converted with the previous
+        // origin.
+        let scale = 1.5;
+        let payload = pointer_leave_position(2560.0, 0.0, scale);
+        for stale_origin_x in [-5120.0, -2560.0, 0.0, 2560.0, 5120.0] {
+            assert!(
+                (payload.x - stale_origin_x) / scale < 0.0,
+                "{stale_origin_x}"
+            );
+            assert!((payload.y - 0.0) / scale < 0.0);
+        }
+    }
 
     #[test]
     fn pointer_crossing_state_gates_ui_events() {
