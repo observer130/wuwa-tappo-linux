@@ -114,8 +114,8 @@ Linux 上 GTK 可能通过 XSettings 应用 1.25/1.5 等分数缩放，而 Tauri
 - `storage.rs` 按 `environment` 和 `cuid` 分桶保存按键/点击计数；写入使用临时文件 + `fsync` + `rename`，目录 0700、文件 0600。
 - 计数上限为 JavaScript 安全整数 `2^53-1`，超出直接报错而不是静默截断。
 - `system.rs` 对日志做 URL 查询串、token、Cookie、Authorization、Bearer 等脱敏；单文件超过 2 MiB 滚动为 `app.log.1`。
-- `reset_local_data`（设置页“清除全部本地缓存”）先按 `environment`/`cuid` 把重置前的总点击数写入 `reset_archive`，再清空该环境的计数与快捷键配置，随后清除 WebKit 浏览数据并重启；再次登录时 `load_reset_click_archive` 返回存档值，前端据此恢复总点击数。
-- `run_network_diagnostics` 只接受官方 HTTPS 主机（API host 固定，资源 host 限定 `*.kurogames-global.com`），对 443 做带超时的连通性探测，返回 `status`（`complete`/`timeout`/`network_error`）与资源地址；同一 `runId` 的重复调用返回 `already_collected`，不会重复探测。
+- `reset_local_data`（设置页“清除全部本地缓存”）先按 `environment`/`cuid` 把重置前的总点击数写入 `reset_archive`，再清空该环境的计数与快捷键配置，并写入 `.reset-pending` 标记后重启；下次启动在创建 WebView 之前删除 WebKit 的缓存与 LocalStorage（保留计数与日志），再次登录时 `load_reset_click_archive` 返回存档值，前端据此恢复总点击数。
+- `run_network_diagnostics` 只接受官方 HTTPS 主机（API host 固定，资源 host 限定 `*.kurogames-global.com`），对 443 做带超时的连通性探测，返回 `status`（`complete`/`timeout`/`network_error`）与资源地址；只探测 TCP 443 可达性，不代表 TLS 握手或 HTTP 请求可用。同一 `runId` 的重复调用返回 `already_collected`，不会重复探测，且只有 `complete` 结果会被记忆，失败后的重试仍会重新探测。
 
 ## 前端补丁流水线
 

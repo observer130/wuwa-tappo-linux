@@ -193,7 +193,7 @@ pkill -f wuwatappo-linux || true
 rm -rf ~/.local/share/dev.w33d.wuwatappo.cn.linux
 ```
 
-这会删除登录态、点击计数和日志。桌面菜单项可用 `./install.sh --uninstall` 移除。
+这会删除登录态、点击计数和日志。桌面菜单项可用 `./install.sh --uninstall` 移除。设置页的“清除全部本地缓存”也会在重启后清理 WebKit 数据；若清理被中断，下次启动会继续完成。
 
 ## 提交 Issue 时请附上
 

@@ -44,12 +44,15 @@ function commandContractsFor(clickCacheEnvironment) {
     launch_installed_app: { request: object({ locale: string }) },
     load_cumulative_click_count: { request: object({ environment }), response: object({ count: clickCount, cuid: string, environment }), notes: 'Frontend discards records whose environment differs. It compares cuid before reconciling a different account.' },
     load_key_press_count: { request: object({ environment }), response: clickCount },
+    load_reset_click_archive: { request: object({ environment, cuid: string }), response: clickCount, notes: 'Archived gross click count captured by reset_local_data; the frontend restores it after the next successful login.' },
     open_login_window: { request: object({ intent: { type: 'string', default: 'login' }, compact: boolean }) },
     open_maintenance_notice: { request: object({ payload: { anyOf: [{ type: 'null' }, { type: 'object' }] } }) },
     open_panel_window: { request: object({ payload: object({ tab: { anyOf: [{ type: 'null' }, string] } }) }) },
     open_update_window: { request: object({ detail: { type: 'object' } }) },
     popup_main_dock_context_menu: { request: object({ x: number, y: number }), notes: 'Coordinates supplied by mouse contextmenu handler are local webview CSS pixels.' },
+    reset_local_data: { request: object({ environment, localCount: clickCount, cumulativeCount: { anyOf: [{ type: 'null' }, clickCount] }, cuid: string, failureMessage: string }), response: { type: 'null' }, notes: 'Archives the displayed/cumulative click total, clears this environment and restarts. WebView data is removed by the next startup because the live WebView keeps writing while WebKit clears asynchronously.' },
     resize_login_window_to_content: { request: object({ payload: object({ width: number, height: number }) }) },
+    run_network_diagnostics: { request: object({ region: string, apiBase: string, assetsHost: { anyOf: [{ type: 'null' }, string] }, preRelease: boolean, runId: string }), response: object({ status: { type: 'string', enum: ['complete', 'already_collected', 'timeout', 'network_error'] }, resource_url: optional(string), resource_source: optional(string) }), notes: 'Probes TCP 443 reachability of official hosts only, not TLS or HTTP. Successful runs are memoized per runId; frontend retries report already_collected.' },
     save_cumulative_click_count: { request: object({ count: clickCount, cuid: string, environment }) },
     save_key_press_count: { request: object({ count: clickCount, environment }), notes: 'Zero is intentional: force persistence is used when clearing pending clicks after successful report or account reconciliation.' },
     set_elevated_autostart: { request: object({ enabled: boolean }) },
@@ -94,7 +97,7 @@ nativeEventContracts['cat-settings-pet-scale-drag'] = { payload: object({ active
 nativeEventContracts['cat-settings-opacity'] = { payload: object({ opacityPercent: number }) };
 nativeEventContracts['cat-settings-pet-scale'] = { payload: object({ petScale: number }) };
 nativeEventContracts['cat-settings-locale'] = { payload: object({ locale: string }) };
-for (const name of ['about-open', 'oss-notice-open', 'tray-quit', 'tray-restart', 'tray-toggle-pet-visibility', 'tray-toggle-window-passthrough', 'update-modal-open', 'cat-auth-login-success', 'cat-auth-logout', 'cat-panel-window-closed', 'cat-panel-request-login', 'cat-persist-clicks-before-exit', 'cat-persist-clicks-done', 'cat-flush-clicks-before-logout', 'cat-flush-clicks-done', 'cat-disconnect-socket-before-exit', 'cat-disconnect-socket-done']) nativeEventContracts[name] = { payload: { type: 'undefined' } };
+for (const name of ['about-open', 'oss-notice-open', 'tray-quit', 'tray-restart', 'tray-toggle-pet-visibility', 'tray-toggle-window-passthrough', 'update-modal-open', 'cat-auth-login-success', 'cat-auth-logout', 'cat-panel-window-closed', 'cat-panel-request-login', 'cat-persist-clicks-before-exit', 'cat-persist-clicks-done', 'cat-disconnect-socket-before-exit', 'cat-disconnect-socket-done']) nativeEventContracts[name] = { payload: { type: 'undefined' } };
 
 function children(node) {
   return Object.values(node).flatMap(value => Array.isArray(value) ? value : [value])

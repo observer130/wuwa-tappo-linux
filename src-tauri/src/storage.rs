@@ -308,6 +308,63 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Marker written before the app restarts for a local reset. WebKit's
+/// `clear_all_browsing_data` is asynchronous and the live WebView can keep
+/// writing caches, so the next process removes WebKit's files before it opens a
+/// WebView instead of trusting the live clear to finish.
+const PENDING_RESET_MARKER: &str = ".reset-pending";
+
+/// Entries WebKitGTK writes directly beneath the app data directory. Only
+/// WebKit-owned data belongs here: counters, logs and anything else the app
+/// owns must survive a pending reset.
+const WEBKIT_DATA_ENTRIES: &[&str] = &[
+    "CacheStorage",
+    "WebKitCache",
+    "databases",
+    "hsts-storage.sqlite",
+    "localstorage",
+    "mediakeys",
+    "storage",
+];
+
+pub(crate) fn mark_reset_pending(directory: &Path) -> io::Result<()> {
+    create_private_directory(directory)?;
+    let path = directory.join(PENDING_RESET_MARKER);
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(b"pending\n")?;
+    file.sync_all()
+}
+
+/// Remove WebKit data left behind by a local reset before any WebView exists.
+/// Returns whether a reset was pending. The marker is removed last, so a
+/// failure keeps the reset pending for the next startup.
+pub(crate) fn complete_pending_reset(directory: &Path) -> io::Result<bool> {
+    let marker = directory.join(PENDING_RESET_MARKER);
+    match fs::symlink_metadata(&marker) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    for name in WEBKIT_DATA_ENTRIES {
+        let path = directory.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
+            Ok(_) => fs::remove_file(&path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    fs::remove_file(&marker)?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn load_key_press_count(
     store: tauri::State<'_, CounterStore>,
@@ -578,5 +635,46 @@ mod tests {
         .unwrap();
         assert_eq!(store.load_key_press("env").unwrap(), 7);
         assert_eq!(store.load_reset_archive("env", "account-a").unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_reset_removes_webkit_data_and_keeps_application_files() {
+        let directory = TestDirectory::new();
+        let root = &directory.0;
+        fs::write(root.join("counters.json"), b"{}\n").unwrap();
+        fs::create_dir_all(root.join("logs")).unwrap();
+        fs::write(root.join("logs").join("app.log"), b"log\n").unwrap();
+        for name in [
+            "CacheStorage",
+            "WebKitCache",
+            "databases",
+            "localstorage",
+            "storage",
+        ] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(root.join(name).join("stale"), b"stale\n").unwrap();
+        }
+        fs::write(root.join("hsts-storage.sqlite"), b"stale\n").unwrap();
+        fs::write(root.join("mediakeys"), b"stale\n").unwrap();
+
+        mark_reset_pending(root).unwrap();
+        assert!(root.join(PENDING_RESET_MARKER).exists());
+        assert!(complete_pending_reset(root).unwrap());
+
+        assert!(!root.join(PENDING_RESET_MARKER).exists());
+        for name in [
+            "CacheStorage",
+            "WebKitCache",
+            "databases",
+            "localstorage",
+            "storage",
+            "hsts-storage.sqlite",
+            "mediakeys",
+        ] {
+            assert!(!root.join(name).exists(), "{name} should be removed");
+        }
+        assert!(root.join("counters.json").exists());
+        assert!(root.join("logs").join("app.log").exists());
+        assert!(!complete_pending_reset(root).unwrap());
     }
 }

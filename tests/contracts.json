@@ -1607,9 +1607,23 @@
         }
       ],
       "response": {
-        "type": "null",
-        "consumption": "await-only"
-      }
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "request": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "value": "cn-cn-prod"
+          },
+          "cuid": {
+            "type": "string"
+          }
+        }
+      },
+      "notes": "Archived gross click count captured by reset_local_data; the frontend restores it after the next successful login."
     },
     {
       "name": "open_about_window",
@@ -6493,9 +6507,41 @@
         }
       ],
       "response": {
-        "type": "null",
-        "consumption": "await-only"
-      }
+        "type": "null"
+      },
+      "request": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "value": "cn-cn-prod"
+          },
+          "localCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cumulativeCount": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            ]
+          },
+          "cuid": {
+            "type": "string"
+          },
+          "failureMessage": {
+            "type": "string"
+          }
+        }
+      },
+      "notes": "Archives the displayed/cumulative click total, clears this environment and restarts. WebView data is removed by the next startup because the live WebView keeps writing while WebKit clears asynchronously."
     },
     {
       "name": "resize_login_window_to_content",
@@ -6616,9 +6662,55 @@
         }
       ],
       "response": {
-        "type": "null",
-        "consumption": "await-only"
-      }
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "already_collected",
+              "timeout",
+              "network_error"
+            ]
+          },
+          "resource_url": {
+            "type": "string",
+            "optional": true
+          },
+          "resource_source": {
+            "type": "string",
+            "optional": true
+          }
+        }
+      },
+      "request": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "string"
+          },
+          "apiBase": {
+            "type": "string"
+          },
+          "assetsHost": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "preRelease": {
+            "type": "boolean"
+          },
+          "runId": {
+            "type": "string"
+          }
+        }
+      },
+      "notes": "Probes TCP 443 reachability of official hosts only, not TLS or HTTP. Successful runs are memoized per runId; frontend retries report already_collected."
     },
     {
       "name": "save_cumulative_click_count",
