@@ -269,9 +269,23 @@ async fn probe_diagnostic_host(host: &str) -> &'static str {
     }
 }
 
+/// Remember a completed probe so a frontend retry reports `already_collected`.
+/// Failed runs stay retryable: the frontend reuses a run id only when it did not
+/// receive a result, and a transient outage must be able to recover.
+fn remember_diagnostic_run(runs: &mut VecDeque<String>, run_id: &str, status: &str) {
+    if status != "complete" {
+        return;
+    }
+    runs.push_back(run_id.to_owned());
+    while runs.len() > DIAGNOSTIC_RUN_HISTORY {
+        runs.pop_front();
+    }
+}
+
 /// Probe the official API and asset hosts for the settings diagnostics panel.
-/// The frontend retries the same run id, so results are memoized per run id to
-/// avoid repeating probes and to report `already_collected` on the retry.
+/// The frontend retries the same run id, so successful results are memoized per
+/// run id to avoid repeating probes and to report `already_collected` on the
+/// retry. Failed probes are not memoized so a retry can still recover.
 #[tauri::command]
 pub async fn run_network_diagnostics(
     app: AppHandle,
@@ -329,10 +343,7 @@ pub async fn run_network_diagnostics(
         }
     }
     if let Ok(mut runs) = recent_diagnostic_runs().lock() {
-        runs.push_back(run_id);
-        while runs.len() > DIAGNOSTIC_RUN_HISTORY {
-            runs.pop_front();
-        }
+        remember_diagnostic_run(&mut runs, &run_id, status);
     }
     Ok(result)
 }
@@ -494,5 +505,19 @@ mod tests {
         assert!(
             validate_diagnostic_url("https://api-mc-wuwatappo.kurogames-global.com", false).is_ok()
         );
+    }
+
+    #[test]
+    fn diagnostics_memoize_only_complete_runs() {
+        let mut runs = VecDeque::new();
+        remember_diagnostic_run(&mut runs, "timeout-run", "timeout");
+        assert!(runs.is_empty());
+        remember_diagnostic_run(&mut runs, "complete-run", "complete");
+        assert_eq!(runs.len(), 1);
+        for index in 0..DIAGNOSTIC_RUN_HISTORY + 2 {
+            remember_diagnostic_run(&mut runs, &format!("run-{index}"), "complete");
+        }
+        assert_eq!(runs.len(), DIAGNOSTIC_RUN_HISTORY);
+        assert_eq!(runs.back().map(String::as_str), Some("run-9"));
     }
 }

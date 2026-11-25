@@ -1547,11 +1547,21 @@ fn reset_local_data(app: &AppHandle, args: &Value) -> Result<Value, String> {
     store.reset_environment(environment)?;
     crate::shortcuts::reset(app)?;
 
+    // WebKit's clear call is asynchronous and the WebView keeps running until
+    // the restart, so the next startup removes its data before opening a
+    // WebView. Keep going if the marker cannot be written.
+    if let Ok(directory) = app.path().app_data_dir() {
+        if let Err(error) = crate::storage::mark_reset_pending(&directory) {
+            eprintln!("Could not mark the pending local reset: {error}");
+        }
+    }
+
     let handle = app.clone();
     std::thread::spawn(move || {
         // Let the invoke resolver deliver its response before the webview is
-        // torn down. `clear_all_browsing_data` schedules work on the WebView
-        // dispatcher, so it must not run on the GTK thread.
+        // torn down. The dispatcher proxies `clear_all_browsing_data` to the
+        // main loop, so this worker may call it; the pending reset marker
+        // covers the rest because WebKit clears asynchronously.
         std::thread::sleep(std::time::Duration::from_millis(150));
         if let Some(window) = handle.get_webview_window("main") {
             if let Err(error) = window.clear_all_browsing_data() {

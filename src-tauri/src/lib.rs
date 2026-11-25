@@ -132,6 +132,21 @@ pub fn run() {
             if let Err(error) = storage::ensure_private_directory(&data_dir) {
                 eprintln!("Could not secure app data directory: {error}");
             }
+            // A local reset marks the directory because `clear_all_browsing_data`
+            // is asynchronous and the WebView can write caches until the restart.
+            // Finish the reset here, before any WebView exists, so a slow disk
+            // cannot leave login state or click cache behind.
+            match storage::complete_pending_reset(&data_dir) {
+                Ok(true) => {
+                    let _ = system::write_message(
+                        &handle,
+                        "info",
+                        "[RESET] removed leftover WebView data from a local reset",
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("Could not finish a pending local reset: {error}"),
+            }
             app.manage(storage::CounterStore::new(data_dir.join("counters.json")));
             menu::setup(&handle)?;
             shortcuts::setup(&handle)?;
