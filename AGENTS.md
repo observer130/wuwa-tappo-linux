@@ -52,6 +52,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 4. 按下面的格式编写 `dist/RELEASE_NOTES-v<version>.md`；`dist/` 是本地构建产物，不进入 git。
 5. `release/v<version>` 以 `--no-ff` 合入 `dev`，`dev` 以 `--no-ff` 合入 `main`；在 `main` 的发布提交上创建 annotated tag `v<version>`，推送 `main` 与 tag。
 6. 使用 `gh release create v<version> <tarball> --title "v<version>" --notes-file dist/RELEASE_NOTES-v<version>.md` 创建 GitHub Release；只上传 tar.gz，不上传 `.sha256` 资产；预发布加 `--prerelease`。
+7. 发布完成后把 `dev` 快进到 `main` 并推送。
 
 Release Notes 文本结构规定如下：
 
